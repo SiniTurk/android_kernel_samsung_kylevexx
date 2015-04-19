@@ -24,7 +24,7 @@
 #define SR030PC50_REGISTER_SIZE 2
 #define SR030PC50_DELAY_DURATION 0xFF
 
-extern inline struct camdrv_ss_state *to_state(struct v4l2_subdev *sd);
+extern struct camdrv_ss_state *to_state(struct v4l2_subdev *sd);
 
 
 
