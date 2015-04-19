@@ -4,8 +4,8 @@
  * This software program is licensed subject to the GNU General Public License
  * (GPL).Version 2,June 1991, available at http://www.fsf.org/copyleft/gpl.html
  *
- * @date        Feb 19th, 2013
- * @version     v2.5.3
+ * @date        Jun 12th, 2013
+ * @version     v2.5.5
  * @brief       BMM050 Linux Driver
  */
 
@@ -39,7 +39,7 @@
 #define BMM_VAL_NAME(name) BMM050_##name
 #define BMM_CALL_API(name) bmm050_##name
 
-#define BMM_I2C_WRITE_DELAY_TIME 1
+#define BMM_I2C_WRITE_DELAY_TIME 5 
 
 #define BMM_DEFAULT_REPETITION_XY BMM_VAL_NAME(REGULAR_REPXY)
 #define BMM_DEFAULT_REPETITION_Z BMM_VAL_NAME(REGULAR_REPZ)
@@ -436,19 +436,8 @@ static void bmm_work_func(struct work_struct *work)
 static int bmm_set_odr(struct i2c_client *client, u8 odr)
 {
 	int err = 0;
-	int i;
 
-	for (i = 0; i < ARRAY_SIZE(odr_map); i++) {
-		if (odr_map[i] == odr)
-			break;
-	}
-
-	if (ARRAY_SIZE(odr_map) == i) {
-		err = -1;
-		return err;
-	}
-
-	err = BMM_CALL_API(set_datarate)(i);
+	err = BMM_CALL_API(set_datarate)(odr);
 	mdelay(BMM_I2C_WRITE_DELAY_TIME);
 
 	return err;
@@ -1772,7 +1761,7 @@ static void __exit BMM_exit(void)
 	i2c_del_driver(&bmm_driver);
 }
 
-MODULE_AUTHOR("Zhengguang.Guo <Zhengguang.Guo@bosch-sensortec.com>");
+MODULE_AUTHOR("Bosch Sensortec <contact@bosch-sensortec.com>");
 MODULE_DESCRIPTION("driver for " SENSOR_NAME);
 MODULE_LICENSE("GPL");
 

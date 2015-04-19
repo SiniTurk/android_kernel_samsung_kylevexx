@@ -1,5 +1,5 @@
-/*  Date: 2012/12/16 12:13:00
- *  Revision: 1.7.1
+/*  Date: 2013/06/17 22:13:00
+ *  Revision: 1.7.2
  */
 
 /*
@@ -2374,8 +2374,6 @@ static int bma2x2_set_mode(struct i2c_client *client, unsigned char Mode)
 	struct bma2x2_data *bma2x2 = i2c_get_clientdata(client);
 #endif
 
-        printk(KERN_INFO "[BMA2XX] %s: %d\n", __func__, (unsigned char)Mode);
-
 	if (Mode < 6) {
 		comres = bma2x2_smbus_read_byte(client, BMA2X2_MODE_CTRL_REG,
 				&data1);
@@ -3363,7 +3361,7 @@ static int bma2x2_open_cal(struct i2c_client *client)
 	cal_filp = filp_open(CALIBRATION_FILE_PATH,
 		O_RDONLY, 0666);
         if (IS_ERR(cal_filp)) {
-		pr_err("[BMA2XX] %s: Can't open calibration file\n",
+		pr_err("[BMC150] %s: Can't open calibration file\n",
 			__func__);
 		set_fs(old_fs);
 		err = PTR_ERR(cal_filp);
@@ -3374,14 +3372,14 @@ static int bma2x2_open_cal(struct i2c_client *client)
 		(char *)cal_data,
 		3 * sizeof(int), &cal_filp->f_pos);
         if (err != 3 * sizeof(int)) {
-		pr_err("[BMA2XX] %s: Can't read the cal data from file\n",
+		pr_err("[BMC150] %s: Can't read the cal data from file\n",
 			__func__);
 		filp_close(cal_filp, current->files);
 		set_fs(old_fs);
 	        return -EIO;
 	}
 
-	printk(KERN_INFO "[BMA2XX] %s (%d,%d,%d)",__func__, cal_data[0],cal_data[1],cal_data[2]);
+	printk(KERN_INFO "[BMC150] %s (%d,%d,%d)",__func__, cal_data[0],cal_data[1],cal_data[2]);
 
         bma2x2_set_offset_x(bma2x2->bma2x2_client, (unsigned char)cal_data[0]);
         bma2x2_set_offset_y(bma2x2->bma2x2_client, (unsigned char)cal_data[1]);
@@ -3401,7 +3399,7 @@ static int bma2x2_get_motion_interrupt(struct i2c_client *client)
 	comres = bma2x2_smbus_read_byte(client, BMA2X2_SLOPE_INT_S__REG,
 			&data);
 
-	pr_info("[BMA2XX] %s: ACC_INT_STATUS %x\n", __func__, data);
+	pr_info("[BMC150] %s: ACC_INT_STATUS %x\n", __func__, data);
 	if (data & 0x04)
 		result = 1;
 
@@ -3414,33 +3412,48 @@ static void bma2x2_set_motion_interrupt(struct i2c_client *client, bool enable, 
 	int comres = 0;
 	unsigned char data;
 	if (enable) {
-		bma2x2_soft_reset(bma2x2->bma2x2_client);
-		mdelay(20);
-		bma2x2_set_mode(bma2x2->bma2x2_client, BMA2X2_MODE_LOWPOWER1);
-        	mdelay(20);
-        	bma2x2_set_bandwidth(client, BMA2X2_BW_SET);
-		bma2x2_set_range(client, BMA2X2_RANGE_SET);
-		mdelay(5);
+		comres = bma2x2_soft_reset(bma2x2->bma2x2_client);
+		comres = bma2x2_set_mode(bma2x2->bma2x2_client, BMA2X2_MODE_LOWPOWER1);
+        	comres = bma2x2_set_bandwidth(client, BMA2X2_BW_SET);
+		comres = bma2x2_set_range(client, BMA2X2_RANGE_SET);
+		mdelay(1);
 		data = 0x04;
 		comres = bma2x2_smbus_write_byte(client, BMA2X2_EN_INT1_PAD_SLOPE__REG,
 							&data);
-		data = 0x02;
+#if defined(CONFIG_MACH_JAVA_SS_BAFFINLITE)
+		data = 0x03;
+#else
+		data = 0x02;  // slope interrupt triggers if [slope_dur<1:0>+1] consecutive slope data points
+#endif
 		comres = bma2x2_smbus_write_byte(client, BMA2X2_SLOPE_DUR__REG,
 							&data);
+
+            	comres = bma2x2_smbus_read_byte(client,  BMA2X2_SLOPE_DUR__REG, 
+							&data);                
+                printk(KERN_INFO "[BMC150] bma2x2_set_motion_interrupt : duration=%d\n", data);
+                
 		if (factorytest){
 			data = 0x00;
 			comres = bma2x2_smbus_write_byte(client, BMA2X2_SLOPE_THRES__REG,
 								&data);
 		}
 		else{
-			data = 0x0A;
+#if defined(CONFIG_MACH_JAVA_SS_BAFFINLITE)
+			data = 0x0A;    // 3.91mg ~ 998mg (2g-range) 0x0A*3.91=39.10mg
+#else
+			data = 0x0A;    // 3.91mg ~ 998mg (2g-range) 0x0A*3.91=39.10mg
+#endif
 			comres = bma2x2_smbus_write_byte(client, BMA2X2_SLOPE_THRES__REG,
 								&data);
 		}
+        
+            	comres = bma2x2_smbus_read_byte(client,  BMA2X2_SLOPE_THRES__REG, 
+							&data);
+                printk(KERN_INFO "[BMC150] bma2x2_set_motion_interrupt : threshold=%d\n", data);
+        
 		data = 0x07;
 		comres = bma2x2_smbus_write_byte(client, BMA2X2_INT_ENABLE1_REG,
 							&data);
-		mdelay(1);
 	} 
 	else {
 		data = 0x00;
@@ -4132,12 +4145,19 @@ static ssize_t bma2x2_flat_hold_time_show(struct device *dev,
 static ssize_t bma2x2_selftest_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
-
+	int result;
 
 	struct i2c_client *client = to_i2c_client(dev);
 	struct bma2x2_data *bma2x2 = i2c_get_clientdata(client);
 
-	return sprintf(buf, "%d\n", atomic_read(&bma2x2->selftest_result));
+	result = atomic_read(&bma2x2->selftest_result);
+
+	if (result == 0)
+		result = 1;
+	else
+		result = 0;
+
+	return sprintf(buf, "%d, %d, %d, %d\n", result, 0, 0, 0);
 
 }
 
@@ -4405,6 +4425,14 @@ static int bma2x2_read_accel_xyz(struct i2c_client *client,
 	unsigned char data[6];
 	struct bma2x2_data *client_data = i2c_get_clientdata(client);
 
+#ifdef BMA2X2_SENSOR_IDENTIFICATION_ENABLE
+	comres = bma2x2_smbus_read_byte_block(client,
+				BMA2X2_ACC_X12_LSB__REG, data, 6);
+	acc->x = (data[1]<<8)|data[0];
+	acc->y = (data[3]<<8)|data[2];
+	acc->z = (data[5]<<8)|data[4];
+
+#else
 	switch (sensor_type) {
 	case 0:
 		comres = bma2x2_smbus_read_byte_block(client,
@@ -4521,6 +4549,7 @@ static int bma2x2_read_accel_xyz(struct i2c_client *client,
 	default:
 		break;
 	}
+#endif
 
 	bma2x2_remap_sensor_data(acc, client_data);
 	return comres;
@@ -4680,7 +4709,7 @@ static ssize_t bma2x2_mode_store(struct device *dev,
 	if (error)
 		return error;
 
-        printk(KERN_INFO "[BMA2XX] %s: %d\n", __func__, (unsigned char) data);  
+        printk(KERN_INFO "[BMC150] %s: %d\n", __func__, (unsigned char) data);  
     
 #ifdef CONFIG_INPUT_BMA2x2_ACC_ALERT_INT
 	mutex_lock(&bma2x2->data_mutex);
@@ -4733,6 +4762,10 @@ static ssize_t bma2x2_raw_data_show(struct device *dev,
 	mutex_unlock(&bma2x2->value_mutex);
 
 #endif
+
+	acc_value.x = acc_value.x >>4;
+	acc_value.y = acc_value.y >>4;
+	acc_value.z = acc_value.z >>4;
 
 	return sprintf(buf, "%d,%d,%d\n", acc_value.x, acc_value.y,
 			acc_value.z);
@@ -5050,7 +5083,7 @@ static ssize_t bma2x2_calibration_show(struct device *dev,
 	struct file *cal_filp = NULL;
 	int result = 1;
 
-        printk(KERN_INFO "[BMA2XX] %s\n", __func__);  
+        printk(KERN_INFO "[BMC150] %s\n", __func__);  
 
 	old_fs = get_fs();
 	set_fs(KERNEL_DS);
@@ -5058,7 +5091,7 @@ static ssize_t bma2x2_calibration_show(struct device *dev,
 	cal_filp = filp_open(CALIBRATION_FILE_PATH,
 		O_RDONLY, 0666);
 	if (IS_ERR(cal_filp)) {
-		pr_err("[BMA2XX] %s: Can't open calibration file\n",
+		pr_err("[BMC150] %s: Can't open calibration file\n",
 			__func__);
 		set_fs(old_fs);
 		err = PTR_ERR(cal_filp);
@@ -5068,7 +5101,7 @@ static ssize_t bma2x2_calibration_show(struct device *dev,
 		(char *)cal_data,
 		3 * sizeof(int), &cal_filp->f_pos);
 	if (err != 3 * sizeof(int)) {
-		pr_err("[BMA2XX] %s: Can't read the cal data from file\n",
+		pr_err("[BMC150] %s: Can't read the cal data from file\n",
 			__func__);
 		filp_close(cal_filp, current->files);
 		set_fs(old_fs);
@@ -5077,7 +5110,7 @@ static ssize_t bma2x2_calibration_show(struct device *dev,
 	if (((cal_data[0] == 0) &&(cal_data[1] == 0) &&(cal_data[2] == 0)))
 		result = 0;
 
-	printk(KERN_INFO "[BMA2XX] %s: result=%d, (%d,%d,%d)",__func__, result, cal_data[0],cal_data[1],cal_data[2]);
+	printk(KERN_INFO "[BMC150] %s: result=%d, (%d,%d,%d)",__func__, result, cal_data[0],cal_data[1],cal_data[2]);
     
 	return sprintf(buf, "%d %d %d %d\n", result, cal_data[0],cal_data[1],cal_data[2]);
 
@@ -5100,19 +5133,19 @@ static ssize_t bma2x2_calibration_store(struct device *dev,
 
 	err = strict_strtoul(buf, 10, &data);
 	if (err) {
-            printk(KERN_ERR "[BMA2XX] %s: error(%d)\n", __func__, (unsigned char) data);
+            printk(KERN_ERR "[BMC150] %s: error(%d)\n", __func__, (unsigned char) data);
             return err;
 	}
 
-        printk(KERN_INFO "[BMA2XX] %s: %d\n", __func__, (unsigned char) data);  
+        printk(KERN_INFO "[BMC150] %s: %d\n", __func__, (unsigned char) data);  
 
 	if (bma2x2_get_mode(bma2x2->bma2x2_client, &mode) < 0) {
-            printk(KERN_ERR "[BMA2XX] %s: bma2x2_get_mode error\n", __func__);  
+            printk(KERN_ERR "[BMC150] %s: bma2x2_get_mode error\n", __func__);  
             return -EINVAL;
 	}
     
 	if (mode != BMA2X2_MODE_NORMAL) {
-            printk(KERN_INFO "[BMA2XX] %s: bma2x2_get_mode %d\n", __func__, mode);  
+            printk(KERN_INFO "[BMC150] %s: bma2x2_get_mode %d\n", __func__, mode);  
             bma2x2_set_mode(bma2x2->bma2x2_client, BMA2X2_MODE_NORMAL);
 	}
        
@@ -5122,7 +5155,7 @@ static ssize_t bma2x2_calibration_store(struct device *dev,
 		unsigned char offset_target_z = 0;
 		bma2x2_read_accel_z(bma2x2->bma2x2_client, bma2x2->sensor_type,
 									 &acc_value_z);
-		printk(KERN_INFO "[BMA2XX] acc_value_z = [%d], while accel calibration\n", acc_value_z);
+		printk(KERN_INFO "[BMC150] acc_value_z = [%d], while accel calibration\n", acc_value_z);
 		if(acc_value_z > 0)
 			offset_target_z = 1;
 		else
@@ -5141,7 +5174,7 @@ static ssize_t bma2x2_calibration_store(struct device *dev,
 			bma2x2_get_cal_ready(bma2x2->bma2x2_client, &tmp);
 			timeout++;
 			if (timeout == 50) {
-				printk(KERN_INFO "[BMA2XX] x get fast calibration ready error\n");
+				printk(KERN_INFO "[BMC150] x get fast calibration ready error\n");
 				return -EINVAL;
 			};
 		} while (tmp == 0);
@@ -5159,7 +5192,7 @@ static ssize_t bma2x2_calibration_store(struct device *dev,
 			bma2x2_get_cal_ready(bma2x2->bma2x2_client, &tmp);
 			timeout++;
 			if (timeout == 50) {
-				printk(KERN_INFO "[BMA2XX] y get fast calibration ready error\n");
+				printk(KERN_INFO "[BMC150] y get fast calibration ready error\n");
 				return -EINVAL;
 			};
 		} while (tmp == 0);
@@ -5177,7 +5210,7 @@ static ssize_t bma2x2_calibration_store(struct device *dev,
 			bma2x2_get_cal_ready(bma2x2->bma2x2_client, &tmp);
 			timeout++;
 			if (timeout == 50) {
-				printk(KERN_INFO "[BMA2XX] z get fast calibration ready error\n");
+				printk(KERN_INFO "[BMC150] z get fast calibration ready error\n");
 				return -EINVAL;
 			};
 		} while (tmp == 0);
@@ -5187,14 +5220,14 @@ static ssize_t bma2x2_calibration_store(struct device *dev,
 		bma2x2_get_offset_y(bma2x2->bma2x2_client, (unsigned char*)&cal_data[1]);
 		bma2x2_get_offset_z(bma2x2->bma2x2_client, (unsigned char*)&cal_data[2]);
 	
-		printk(KERN_INFO "[BMA2XX] %s: (%d,%d,%d)",__func__, cal_data[0],cal_data[1],cal_data[2]);
+		printk(KERN_INFO "[BMC150] %s: (%d,%d,%d)",__func__, cal_data[0],cal_data[1],cal_data[2]);
 
 		old_fs = get_fs();
 		set_fs(KERNEL_DS);
 		cal_filp = filp_open(CALIBRATION_FILE_PATH,
 			O_CREAT | O_TRUNC | O_WRONLY | O_SYNC, 0666);
 		if (IS_ERR(cal_filp)) {
-			pr_err("[BMA2XX] %s: Can't open calibration file\n",
+			pr_err("[BMC150] %s: Can't open calibration file\n",
 				__func__);
 			set_fs(old_fs);
 			err = PTR_ERR(cal_filp);
@@ -5205,7 +5238,7 @@ static ssize_t bma2x2_calibration_store(struct device *dev,
 			(char *)cal_data,
 			3 * sizeof(int), &cal_filp->f_pos);
 		if (err != 3 * sizeof(int)) {
-			pr_err("[BMA2XX] %s: Can't write the cal data to file\n",
+			pr_err("[BMC150] %s: Can't write the cal data to file\n",
 				__func__);
 			err = -EIO;
 		}
@@ -5220,7 +5253,7 @@ static ssize_t bma2x2_calibration_store(struct device *dev,
 		cal_filp = filp_open(CALIBRATION_FILE_PATH,
 			O_CREAT | O_TRUNC | O_WRONLY | O_SYNC, 0666);
 		if (IS_ERR(cal_filp)) {
-			pr_err("[BMA2XX] %s: Can't open calibration file\n",
+			pr_err("[BMC150] %s: Can't open calibration file\n",
 				__func__);
 			set_fs(old_fs);
 			err = PTR_ERR(cal_filp);
@@ -5234,7 +5267,7 @@ static ssize_t bma2x2_calibration_store(struct device *dev,
 			(char *)cal_data,
 			3 * sizeof(int), &cal_filp->f_pos);
 		if (err != 3 * sizeof(int)) {
-			pr_err("[BMA2XX] %s: Can't write the cal data to file\n",
+			pr_err("[BMC150] %s: Can't write the cal data to file\n",
 				__func__);
 			err = -EIO;
 		}
@@ -5620,7 +5653,7 @@ static ssize_t bma2x2_reactive_enable_show(struct device *dev,
 	struct i2c_client *client = to_i2c_client(dev);
 	struct bma2x2_data *bma2x2 = i2c_get_clientdata(client);
 
-	/*pr_info("[BMA2XX] %s: state =%d\n", __func__,
+	/*pr_info("[BMC150] %s: state =%d\n", __func__,
 		atomic_read(&bma2x2->reactive_state));*/
 
 	return sprintf(buf, "%d\n",
@@ -5683,7 +5716,7 @@ static ssize_t bma2x2_reactive_enable_store(struct device *dev,
 
 	mutex_unlock(&bma2x2->data_mutex);
 
-	pr_info("[BMA2XX] %s: onoff = %d, state =%d\n", __func__,
+	pr_info("[BMC150] %s: onoff = %d, state =%d\n", __func__,
 		atomic_read(&bma2x2->reactive_enable),
 		atomic_read(&bma2x2->reactive_state));
 
@@ -5701,7 +5734,7 @@ static DEVICE_ATTR(value, S_IRUGO,
 		bma2x2_value_show, NULL);
 static DEVICE_ATTR(raw_data, S_IRUGO,
 		bma2x2_raw_data_show, NULL);
-static DEVICE_ATTR(poll_delay, S_IRUGO|S_IWUSR|S_IWGRP,
+static DEVICE_ATTR(delay, S_IRUGO|S_IWUSR|S_IWGRP,
 		bma2x2_delay_show, bma2x2_delay_store);
 static DEVICE_ATTR(enable, S_IRUGO|S_IWUSR|S_IWGRP,
 		bma2x2_enable_show, bma2x2_enable_store);
@@ -5809,7 +5842,7 @@ static struct attribute  *bma2x2_attributes[] = {
 	&dev_attr_mode.attr,
 	&dev_attr_raw_data.attr,
 	&dev_attr_value.attr,
-	&dev_attr_poll_delay.attr,
+	&dev_attr_delay.attr,
 	&dev_attr_enable.attr,
 	&dev_attr_SleepDur.attr,
 	&dev_attr_reg.attr,
@@ -5862,6 +5895,7 @@ static struct device_attribute *accelerometer_attrs[] = {
 	&dev_attr_raw_data,
 	&dev_attr_calibration,
 	&dev_attr_accel_cal_open,	
+	&dev_attr_selftest,	
 #ifdef CONFIG_INPUT_BMA2x2_ACC_ALERT_INT
 	&dev_attr_reactive_alert,
 #endif
@@ -5885,10 +5919,10 @@ static void bma2x2_work_func_alert(struct work_struct *work)
 		/*handle motion recognition*/
 		atomic_set(&bma2x2->reactive_state, true);
 		bma2x2->factory_mode = false;
-		pr_info("[BMA2XX] %s: motion interrupt happened\n",
+		pr_info("[BMC150] %s: motion interrupt happened\n",
 			__func__);
 		wake_lock_timeout(&bma2x2->reactive_wake_lock,
-			msecs_to_jiffies(2000));
+			msecs_to_jiffies(3000));
 	}
 }
 
@@ -6110,13 +6144,18 @@ static int bma2x2_setup_irq(struct bma2x2_data *bma2x2)
 	int rc = -EIO;
 	int irq = -1;
 
+	if (NULL == bma2x2->bst_pd) {
+		pr_err("%s: bma2x2 irq was not setting\n",__func__);
+		return rc;
+	}
+
 	rc = gpio_request(bma2x2->bst_pd->irq, "gpio_bma2x2_int");
 	if (rc < 0) {
 		pr_err("%s: gpio %d request failed (%d)\n",
 			__func__, bma2x2->bst_pd->irq, rc);
 		return rc;
 	}
-	printk(KERN_ERR "[BMA2XX] Request GPIO_%d Sucess!\n", bma2x2->bst_pd->irq);
+	printk(KERN_ERR "[BMC150] Request GPIO_%d Sucess!\n", bma2x2->bst_pd->irq);
 
 	rc = gpio_direction_input(bma2x2->bst_pd->irq);
 	if (rc < 0) {
@@ -6134,11 +6173,11 @@ static int bma2x2_setup_irq(struct bma2x2_data *bma2x2)
 		pr_info("%s: irq = %d\n", __func__, irq);
 	
 		if (rc < 0) {
-			pr_err("[BMA2XX] %s request_threaded_irq fail err=%d\n",
+			pr_err("[BMC150] %s request_threaded_irq fail err=%d\n",
 				__func__, rc);
 			return rc;
 		} else {
-                    printk(KERN_INFO "[BMA2XX] request_irq success IRQ_NO:%d\n", irq);
+                    printk(KERN_INFO "[BMC150] request_irq success IRQ_NO:%d\n", irq);
 		}
 		/* start with interrupts disabled */
 		disable_irq(irq);
@@ -6151,6 +6190,88 @@ err_gpio_direction_input:
 done:
 	return rc;
 }
+#endif
+
+
+#if defined(CONFIG_SENSORS_HSCDTD006A) || defined(CONFIG_SENSORS_HSCDTD008A)
+static struct bma2x2_data *g_bma2x2 = NULL;
+static atomic_t flgEna;
+static atomic_t delay;
+int accsns_get_acceleration_data(int *xyz)
+{
+	struct bma2x2acc acc_value;        
+
+        if(g_bma2x2 == NULL) return 1;
+
+	bma2x2_read_accel_xyz(g_bma2x2->bma2x2_client, g_bma2x2->sensor_type, &acc_value);
+
+	mutex_lock(&g_bma2x2->value_mutex);
+	g_bma2x2->value.x = acc_value.x;
+	g_bma2x2->value.y = acc_value.y;
+	g_bma2x2->value.z = acc_value.z;
+	mutex_unlock(&g_bma2x2->value_mutex);
+
+	acc_value.x = acc_value.x >>4;
+	acc_value.y = acc_value.y >>4;
+	acc_value.z = acc_value.z >>4;
+    
+        xyz[0] = (int)(acc_value.x);
+        xyz[1] = (int)(acc_value.y);
+        xyz[2] = (int)(acc_value.z);
+
+	//printk(KERN_INFO "[BMC150] Acc_I2C, x:%d, y:%d, z:%d\n", xyz[0], xyz[1], xyz[2]);
+	return 0;
+}
+
+void accsns_activate(int flgatm, int flg, int dtime)
+{
+    int pre_enable;
+
+    if(g_bma2x2 == NULL) return;
+        
+    pre_enable= atomic_read(&g_bma2x2->enable);
+    
+    printk(KERN_INFO "[BMC150] accsns_activate : flgatm=%d, flg=%d, dtime=%d\n", flgatm, flg, dtime);
+
+    if (flg != 0) flg = 1;
+
+#ifdef CONFIG_INPUT_BMA2x2_ACC_ALERT_INT
+	mutex_lock(&g_bma2x2->data_mutex);
+#endif
+	mutex_lock(&g_bma2x2->enable_mutex);
+    //Power modes
+    if (flg == 0) //sleep
+    {
+        if (pre_enable == 1) {
+            bma2x2_set_mode(g_bma2x2->bma2x2_client, BMA2X2_MODE_SUSPEND);
+            atomic_set(&g_bma2x2->enable, 0);
+#ifdef CONFIG_INPUT_BMA2x2_ACC_ALERT_INT
+            atomic_set(&g_bma2x2->set_mode, (unsigned int)BMA2X2_MODE_SUSPEND);
+#endif            
+        }
+    }
+    else
+    {
+        if (pre_enable == 0) {
+            bma2x2_set_mode(g_bma2x2->bma2x2_client, BMA2X2_MODE_NORMAL);
+            atomic_set(&g_bma2x2->enable, 1);
+#ifdef CONFIG_INPUT_BMA2x2_ACC_ALERT_INT
+            atomic_set(&g_bma2x2->set_mode, (unsigned int)BMA2X2_MODE_NORMAL);
+#endif            
+        }
+    }
+    	mutex_unlock(&g_bma2x2->enable_mutex);
+#ifdef CONFIG_INPUT_BMA2x2_ACC_ALERT_INT
+	mutex_unlock(&g_bma2x2->data_mutex);
+#endif    
+
+    if (flgatm) {
+        atomic_set(&flgEna, flg);
+        atomic_set(&delay, dtime);
+    }
+}
+EXPORT_SYMBOL(accsns_get_acceleration_data);
+EXPORT_SYMBOL(accsns_activate);
 #endif
 
 static int bma2x2_probe(struct i2c_client *client,
@@ -6171,9 +6292,14 @@ static int bma2x2_probe(struct i2c_client *client,
 		err = -ENOMEM;
 		goto exit;
 	}
-    
-        mdelay(10); //for preventing i2c fail of reading chip id
-        
+
+	/* do soft reset */
+	if (bma2x2_soft_reset(client) < 0) {
+		err = -EINVAL;
+		goto kfree_exit;
+	}
+	mdelay(5);
+
 	/* read chip id */
 	tempvalue = i2c_smbus_read_word_data(client, BMA2X2_CHIP_ID_REG);
 	tmp_chip_id = tempvalue&0x00ff;
@@ -6229,12 +6355,6 @@ static int bma2x2_probe(struct i2c_client *client,
 #if defined(BMA2X2_ENABLE_INT1) || defined(BMA2X2_ENABLE_INT2)
 	bma2x2_set_Int_Mode(client, 1);/*latch interrupt 250ms*/
 #endif
-	/*8,single tap
-	  10,orient
-	  11,flat*/
-	//bma2x2_set_Int_Enable(client, 8, 1);
-	//bma2x2_set_Int_Enable(client, 10, 1);
-	//bma2x2_set_Int_Enable(client, 11, 1);
 
 #ifdef BMA2X2_ENABLE_INT1
 	/* maps interrupt to INT1 pin */
@@ -6274,11 +6394,7 @@ static int bma2x2_probe(struct i2c_client *client,
 	if (!dev){
 		goto error_input_allocate_device_bma2x2;
 	}
-#if defined (CONFIG_SENSORS_BMC150)
 	dev->name = SENSOR_NAME;
-#else
-	dev->name = "accelerometer_sensor";
-#endif
 	dev->id.bustype = BUS_I2C;
 
 	input_set_capability(dev, EV_REL, SLOW_NO_MOTION_INTERRUPT);
@@ -6320,13 +6436,13 @@ static int bma2x2_probe(struct i2c_client *client,
 		if (NULL != data->bst_pd) {
 			memcpy(data->bst_pd, client->dev.platform_data,
 					sizeof(*data->bst_pd));
-			printk(KERN_INFO "[BMA2XX] bma2x2 place of bma in %s: %d\n",
+			printk(KERN_INFO "[BMC150] bma2x2 place of bma in %s: %d\n",
 					data->bst_pd->name,
 					data->bst_pd->place);
 		}
 	}
         else{
-            printk(KERN_ERR "[BMA2XX] could not remap bma2x2 axis\n");
+            printk(KERN_ERR "[BMC150] could not remap bma2x2 axis\n");
         }
 #endif
 	
@@ -6356,6 +6472,9 @@ static int bma2x2_probe(struct i2c_client *client,
 	register_early_suspend(&data->early_suspend);
 #endif
 
+#if defined(CONFIG_SENSORS_HSCDTD006A) || defined(CONFIG_SENSORS_HSCDTD008A)
+        g_bma2x2 = data;
+#endif
 
 	return 0;
 
@@ -6383,6 +6502,9 @@ error_input_allocate_device_bma2x2:
 #endif
 kfree_exit:
 	kfree(data);
+#if defined(CONFIG_SENSORS_HSCDTD006A) || defined(CONFIG_SENSORS_HSCDTD008A)
+        g_bma2x2 = NULL;
+#endif
 exit:
 	return err;
 }
@@ -6455,6 +6577,16 @@ static int __devexit bma2x2_remove(struct i2c_client *client)
 
 	return 0;
 }
+
+void bma2x2_shutdown(struct i2c_client *client)
+{
+	struct bma2x2_data *data = i2c_get_clientdata(client);
+
+	mutex_lock(&data->enable_mutex);
+	bma2x2_set_mode(data->bma2x2_client, BMA2X2_MODE_DEEP_SUSPEND);
+	mutex_unlock(&data->enable_mutex);
+}
+
 #ifdef CONFIG_PM
 #ifndef CONFIG_HAS_EARLYSUSPEND
 static int bma2x2_suspend(struct i2c_client *client, pm_message_t mesg)
@@ -6507,6 +6639,7 @@ static struct i2c_driver bma2x2_driver = {
 		.owner	= THIS_MODULE,
 		.name	= SENSOR_NAME,
 	},
+	.shutdown	= bma2x2_shutdown,
 //	.suspend	= bma2x2_suspend,
 //	.resume		= bma2x2_resume,
 	.id_table	= bma2x2_id,
@@ -6517,24 +6650,7 @@ static struct i2c_driver bma2x2_driver = {
 
 static int __init BMA2X2_init(void)
 {   
-#if defined (CONFIG_MACH_HAWAII_SS_KYLEVE) || defined (CONFIG_MACH_HAWAII_SS_KYLEVESS)
-        int ret=0;
-        struct regulator *power_regulator = NULL;
-
-        power_regulator = regulator_get(NULL, "tcxldo_uc");
-        if (IS_ERR(power_regulator)){
-                printk(KERN_ERR "[BMA2XX] can not get prox_regulator (SENSOR_3.3V) \n");
-        } else {
-                ret = regulator_set_voltage(power_regulator,3300000,3300000);
-                printk(KERN_INFO "[BMA2XX] regulator_set_voltage : %d\n", ret);
-                ret = regulator_enable(power_regulator);
-                printk(KERN_INFO "[BMA2XX] regulator_enable : %d\n", ret);
-                regulator_put(power_regulator);
-        }
-        mdelay(10); //for preventing i2c fail of reading chip id        
-#endif
-
-        printk(KERN_INFO "[BMA2XX] %s\n",__FUNCTION__);
+        printk(KERN_INFO "[BMC150] %s\n",__FUNCTION__);
 
 	return i2c_add_driver(&bma2x2_driver);
 }
@@ -6544,7 +6660,7 @@ static void __exit BMA2X2_exit(void)
 	i2c_del_driver(&bma2x2_driver);
 }
 
-MODULE_AUTHOR("Albert Zhang <xu.zhang@bosch-sensortec.com>");
+MODULE_AUTHOR("Bosch Sensortec <contact@bosch-sensortec.com>");
 MODULE_DESCRIPTION("BMA2X2 accelerometer sensor driver");
 MODULE_LICENSE("GPL");
 

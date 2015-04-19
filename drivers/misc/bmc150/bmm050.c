@@ -4,8 +4,8 @@
  * This software program is licensed subject to the GNU General Public License
  * (GPL).Version 2,June 1991, available at http://www.fsf.org/copyleft/gpl.html
  *
- * @date        Apr 28th, 2011
- * @version     v1.0
+ * @date        Mar 11th, 2013
+ * @version     v1.0.1
  * @brief       BMM050 Linux Driver API
  */
 

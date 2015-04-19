@@ -30,6 +30,8 @@
 #include <linux/earlysuspend.h>
 #endif
 
+#define BMA2XX_SW_CALIBRATION 1
+
 #define BMA2XXX_GET_BITSLICE(regvar, bitname)\
 	((regvar & bitname##__MSK) >> bitname##__POS)
 
@@ -57,7 +59,12 @@ struct bma2xx_data {
 	struct early_suspend early_suspend;
 #endif
 	int IRQ;
+	u32 orientation;
 };
+
+#ifdef BMA2XX_SW_CALIBRATION
+static int bma2xx_offset[3];
+#endif
 
 #ifdef CONFIG_HAS_EARLYSUSPEND
 static void bma2xx_early_suspend(struct early_suspend *h);
@@ -1493,14 +1500,89 @@ static void bma2xx_work_func(struct work_struct *work)
 	static struct bma2xxacc acc;
 	int X, Y, Z;
 	unsigned long delay = msecs_to_jiffies(atomic_read(&bma2xx->delay));
-
+	X = 0;
+	Y = 0;
+	Z = 0;
 	bma2xx_read_accel_xyz(bma2xx->bma2xx_client, &acc);
-	X = -acc.x;
-	Y = acc.y;
-	Z = -acc.z;
+	switch (bma2xx->orientation) {
+	case BMA_ORI_100_010_001:
+		X = acc.x;
+		Y = acc.y;
+		Z = acc.z;
+		break;
+	case BMA_ORI_010_100_001:
+		X = acc.y;
+		Y = acc.x;
+		Z = acc.z;
+		break;
+	case BMA_ORI_f00_010_001:
+		X = -acc.x;
+		Y = acc.y;
+		Z = acc.z;
+		break;
+	case BMA_ORI_f00_0f0_001:
+		X = -acc.x;
+		Y = -acc.y;
+		Z = acc.z;
+		break;
+	case BMA_ORI_100_0f0_001:
+		X = acc.x;
+		Y = -acc.y;
+		Z = acc.z;
+		break;
+	case BMA_ORI_100_010_00f:
+		X = acc.x;
+		Y = acc.y;
+		Z = -acc.z;
+		break;
+	case BMA_ORI_010_100_00f:
+		X = acc.y;
+		Y = acc.x;
+		Z = -acc.z;
+		break;
+	case BMA_ORI_f00_010_00f:
+		X = -acc.x;
+		Y = acc.y;
+		Z = -acc.z;
+		break;
+	case BMA_ORI_f00_0f0_00f:
+		X = -acc.x;
+		Y = -acc.y;
+		Z = -acc.z;
+		break;
+	case BMA_ORI_100_0f0_00f:
+		X = acc.x;
+		Y = -acc.y;
+		Z = -acc.z;
+		break;
+	case BMA_ORI_010_f00_00f:
+		X = acc.y;
+		Y = -acc.x;
+		Z = -acc.z;
+		break;
+	case BMA_ORI_0f0_100_00f:
+		X = -acc.y;
+		Y = acc.x;
+		Z = -acc.z;
+		break;
+	case BMA_ORI_0f0_100_001:
+		X = -acc.y;
+		Y = acc.x;
+		Z = acc.z;
+		break;
+	default:
+		break;
+	}
+#ifdef BMA2XX_SW_CALIBRATION
+	input_report_abs(bma2xx->input, ABS_X, X-bma2xx_offset[0]);
+	input_report_abs(bma2xx->input, ABS_Y, Y-bma2xx_offset[1]);
+	input_report_abs(bma2xx->input, ABS_Z, Z-bma2xx_offset[2]);
+#else
+
 	input_report_abs(bma2xx->input, ABS_X, X);
 	input_report_abs(bma2xx->input, ABS_Y, Y);
 	input_report_abs(bma2xx->input, ABS_Z, Z);
+#endif
 	input_sync(bma2xx->input);
 	mutex_lock(&bma2xx->value_mutex);
 	bma2xx->value = acc;
@@ -1772,7 +1854,7 @@ static ssize_t bma2xx_int_mode_store(struct device *dev,
 				     struct device_attribute *attr,
 				     const char *buf, size_t count)
 {
-	unsigned char data;
+	unsigned long data;
 	struct i2c_client *client = to_i2c_client(dev);
 	struct bma2xx_data *bma2xx = i2c_get_clientdata(client);
 
@@ -2615,6 +2697,39 @@ static ssize_t bma2xx_selftest_store(struct device *dev,
 
 	return count;
 }
+#ifdef BMA2XX_SW_CALIBRATION
+static ssize_t bma2xx_get_offset(struct device *dev,
+			struct device_attribute *attr,
+			char *buf)
+{
+	return sprintf(buf, "%d, %d, %d\n", bma2xx_offset[0],
+				bma2xx_offset[1], bma2xx_offset[2]);
+}
+
+static ssize_t bma2xx_set_offset(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	int x, y, z;
+	int err = -EINVAL;
+	struct i2c_client *client = to_i2c_client(dev);
+	struct bma2xx_data *dd = i2c_get_clientdata(client);
+	struct input_dev *input_dev = dd->input;
+	err = sscanf(buf, "%d %d %d", &x, &y, &z);
+	if (err != 3) {
+		pr_err("invalid parameter number: %d\n", err);
+		return err;
+	}
+	mutex_lock(&dd->value_mutex);
+	bma2xx_offset[0] = x;
+	bma2xx_offset[1] = y;
+	bma2xx_offset[2] = z;
+	mutex_unlock(&dd->value_mutex);
+	return count;
+}
+static DEVICE_ATTR(offset,  S_IRUGO | S_IWUSR | S_IWGRP | S_IWOTH,
+			bma2xx_get_offset, bma2xx_set_offset);
+#endif
 
 static DEVICE_ATTR(range, S_IRUGO | S_IWUSR | S_IWGRP | S_IWOTH,
 		   bma2xx_range_show, bma2xx_range_store);
@@ -2710,6 +2825,9 @@ static struct attribute *bma2xx_attributes[] = {
 	&dev_attr_fast_calibration_y.attr,
 	&dev_attr_fast_calibration_z.attr,
 	&dev_attr_selftest.attr,
+#ifdef BMA2XX_SW_CALIBRATION
+	&dev_attr_offset.attr,
+#endif
 	NULL
 };
 
@@ -2899,6 +3017,7 @@ static irqreturn_t bma2xx_irq_handler(int irq, void *handle)
 }
 #endif /* defined(BMA2XXX_ENABLE_INT1)||defined(BMA2XXX_ENABLE_INT2) */
 
+
 static int bma2xx_probe(struct i2c_client *client,
 			const struct i2c_device_id *id)
 {
@@ -2908,6 +3027,12 @@ static int bma2xx_probe(struct i2c_client *client,
 	struct input_dev *dev;
 	struct device_node *np;
 	u32 val = 0;
+#ifdef BMA2XX_SW_CALIBRATION
+	bma2xx_offset[0] = 0;
+	bma2xx_offset[1] = 0;
+	bma2xx_offset[2] = 0;
+#endif
+
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
 		printk(KERN_INFO "[bma2xxx]i2c_check_functionality error\n");
 	data = kzalloc(sizeof(struct bma2xx_data), GFP_KERNEL);
@@ -2969,6 +3094,11 @@ static int bma2xx_probe(struct i2c_client *client,
 		if (of_property_read_u32(np, "gpio-irq-pin", &val))
 			goto err_read;
 		client->irq = val;
+		if (of_property_read_u32(np, "orientation", &val))
+			data->orientation = 11;
+		else
+			data->orientation = val;
+		client->irq = val;
 	}
 #if defined(BMA2XXX_ENABLE_INT1) || defined(BMA2XXX_ENABLE_INT2)
 	data->IRQ = gpio_to_irq(client->irq);
@@ -3014,6 +3144,7 @@ static int bma2xx_probe(struct i2c_client *client,
 	}
 
 	data->input = dev;
+	data->input->dev.parent = &data->bma2xx_client->dev;
 
 	err = sysfs_create_group(&client->dev.kobj, &bma2xx_attribute_group);
 	if (err < 0)
