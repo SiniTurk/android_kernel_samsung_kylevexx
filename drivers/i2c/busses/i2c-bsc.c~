@@ -50,7 +50,7 @@
 
 #define DEFAULT_I2C_BUS_SPEED    BSC_BUS_SPEED_50K
 #define CMDBUSY_DELAY            100
-#define SES_TIMEOUT              (msecs_to_jiffies(200))
+#define SES_TIMEOUT              (msecs_to_jiffies(100))
 
 /* maximum RX/TX FIFO size in bytes */
 #define MAX_RX_FIFO_SIZE         64
