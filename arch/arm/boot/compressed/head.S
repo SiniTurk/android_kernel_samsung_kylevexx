@@ -132,7 +132,15 @@ start:
 		.word	start			@ absolute load/run zImage address
 		.word	_edata			@ zImage end address
  THUMB(		.thumb			)
-1:		mov	r7, r1			@ save architecture ID
+chury_debug_addr: 
+		.word  0xCAFECAFE  @R1: machine id 
+		.word  0xCAFECAFE  @R2: ATAG Addr
+		.word  0xCAFECAFE  @remark for debugging.
+1:		
+		adr r7, chury_debug_addr   @debugging point. 	
+		str	r1, [r7], #4		@ Machine ID: 0x0A8D for BRCM Hawaii and Java.  
+		str	r2, [r7], #4		@ ATAG address: 0x82000100 
+		mov	r7, r1			@ save architecture ID
 		mov	r8, r2			@ save atags pointer
 
 #ifndef __ARM_ARCH_2__
@@ -709,6 +717,7 @@ __armv7_mmu_cache_on:
 		mcrne	p15, 0, r0, c8, c7, 0	@ flush I,D TLBs
 #endif
 		mrc	p15, 0, r0, c1, c0, 0	@ read control reg
+		bic	r0, r0, #1 << 28	@ clear SCTLR.TRE
 		orr	r0, r0, #0x5000		@ I-cache enable, RR cache replacement
 		orr	r0, r0, #0x003c		@ write buffer
 #ifdef CONFIG_MMU
