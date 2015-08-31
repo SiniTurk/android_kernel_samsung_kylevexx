@@ -1988,9 +1988,6 @@ static int futex_lock_pi(u32 __user *uaddr, unsigned int flags, int detect,
 	struct futex_q q = futex_q_init;
 	int res, ret;
 	
-	if (uaddr == uaddr2)
-		return -EINVAL;
-
 	if (refill_pi_state_cache())
 		return -ENOMEM;
 
@@ -2290,6 +2287,9 @@ static int futex_wait_requeue_pi(u32 __user *uaddr, unsigned int flags,
 	union futex_key key2 = FUTEX_KEY_INIT;
 	struct futex_q q = futex_q_init;
 	int res, ret;
+	
+	if (uaddr == uaddr2)
+		return -EINVAL;
 
 	if (!bitset)
 		return -EINVAL;
