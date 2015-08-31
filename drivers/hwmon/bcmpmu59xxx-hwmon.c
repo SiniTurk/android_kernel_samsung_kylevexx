@@ -31,8 +31,8 @@
 #include <linux/seq_file.h>
 #endif
 
-#define PMU_TEMP_MULTI_CONST 514
-#define KELVIN_CONST 284
+#define PMU_TEMP_MULTI_CONST 497
+#define KELVIN_CONST 276
 
 static int debug_mask = BCMPMU_PRINT_ERROR | BCMPMU_PRINT_INIT;
 #define pr_hwmon(debug_level, args...) \
@@ -124,11 +124,10 @@ static int bcmpmu_adc_convert(struct bcmpmu59xxx *bcmpmu,
 					BCMPMU_ADC_RESOLUTION +
 					(adc->pdata[channel].adc_offset);
 	} else {
-		/* temp = raw * 0.514 - 283.5 C
-		 * But for better precision below formulae
-		 * gives the result in 10th multiple of Centigrade*/
-		result->conv = ((result->raw * PMU_TEMP_MULTI_CONST) -
-					(KELVIN_CONST * 1000)) / 100;
+		/* temp = raw * 0.497 - 275.7 */
+		result->conv =
+				((result->raw * PMU_TEMP_MULTI_CONST) / 1000)
+								- KELVIN_CONST;
 	}
 
 	pr_hwmon(FLOW, "%s channel:%d raw = %x conv_formula = %d\n",

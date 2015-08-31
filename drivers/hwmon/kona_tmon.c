@@ -83,12 +83,12 @@ enum {
 
 static long raw_to_celcius(long raw)
 {
-	return (426000 - (562 * raw)) / 1000;
+	return (407000 - (538 * raw)) / 1000;
 }
 
 static unsigned long celcius_to_raw(long celcius)
 {
-	return (426000 - celcius * 1000) / 562;
+	return (407000 - celcius * 1000) / 538;
 }
 
 static int cmp(const void *a, const void *b)
