@@ -24,6 +24,10 @@
 		timer-name = "aon-timer";
 	};
 
+	qcom,ram-console{
+		compatible = "ram-console";
+	};
+
 	uart@3e000000 {
 		clock-frequency = <48000000>;
 		port-name = "bluetooth";
