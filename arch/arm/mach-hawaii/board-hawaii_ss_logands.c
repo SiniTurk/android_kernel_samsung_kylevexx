@@ -2127,19 +2127,7 @@ struct platform_device bcm_vibrator_device = {
 };
 #endif
 
-static struct platform_driver ram_console_driver = {
-        .probe = ram_console_driver_probe,
-        .driver         = {
-                .name   = "ram_console",
-        },
-};
- 
-static int __init ram_console_module_init(void)
-{
-        int err;
-        err = platform_driver_register(&ram_console_driver);
-        return err;
-}
+
 
 static struct platform_device *hawaii_devices[] __initdata = {
 #ifdef CONFIG_KEYBOARD_BCM
@@ -2461,8 +2449,6 @@ static void __init hawaii_init(void)
 	konafb_init();
 #endif
 	hawaii_add_common_devices();
-	
-	ram_console_module_init();
 
 #ifdef CONFIG_LCD_NT35510_SUPPORT
 	platform_device_register(&nt35510_panel_device);
