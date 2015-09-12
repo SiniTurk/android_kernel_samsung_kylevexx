@@ -670,6 +670,9 @@ bool pm_wakeup_pending(void)
 	unsigned long flags;
 	bool ret = false;
 
+	if (pm_is_forced_sleep())
+		return 0;
+	
 	spin_lock_irqsave(&events_lock, flags);
 	if (events_check_enabled) {
 		unsigned int cnt, inpr;
@@ -698,6 +701,7 @@ bool pm_wakeup_pending(void)
  * drop down to zero has been interrupted by a signal (and the current number
  * of wakeup events being processed is still nonzero).  Otherwise return 'true'.
  */
+ 
 bool pm_get_wakeup_count(unsigned int *count)
 {
 	unsigned int cnt, inpr;

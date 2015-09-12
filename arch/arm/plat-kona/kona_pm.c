@@ -32,6 +32,8 @@
 #include <plat/ccu_profiler.h>
 #include <plat/profiler.h>
 #include <mach/kona_timer.h>
+#include <linux/irq.h>
+#include <mach/irqs.h>
 
 
 int deepsleep_profiling;
@@ -56,6 +58,7 @@ struct kona_pm_params {
 	u32 num_states;
 	u32 suspend_state;
 	int log_lvl;
+	int force_sleep;
 	spinlock_t cstate_lock;
 };
 
@@ -376,6 +379,23 @@ void kona_pm_reg_pm_enter_handler(int (*enter) (suspend_state_t state))
 {
 	pr_info("%s called\n", __func__);
 	kona_pm_ops.enter = enter;
+}
+
+void pm_force_sleep_reg_handler(int (*enter) (suspend_state_t state))
+{
+	kona_pm_reg_pm_enter_handler(enter);
+	pm_prms.force_sleep = 1;
+/* Sometimes due to delayed suspend, the following issue was observed.
+   Once force sleep command is issued, modem goes to retention, but AP
+   is active. When existing CP-AP interrupt is getting handled, AP writes
+   to BINTC register in modem domain which is now in LPM, and freezes.
+   To avoid this, disable the intr once force sleep handler is called */
+	disable_irq(IRQ_IPC_C2A);
+}
+
+int pm_is_forced_sleep()
+{
+	return pm_prms.force_sleep;
 }
 
 static int disable_idle_state(struct cpuidle_state *idle_state,
