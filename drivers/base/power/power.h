@@ -41,8 +41,6 @@ static inline void device_pm_init(struct device *dev)
 	pm_runtime_init(dev);
 }
 
-extern int pm_is_forced_sleep(void);
-
 static inline void device_pm_add(struct device *dev)
 {
 	dev_pm_qos_constraints_init(dev);
@@ -61,6 +59,8 @@ static inline void device_pm_move_after(struct device *deva,
 static inline void device_pm_move_last(struct device *dev) {}
 
 #endif /* !CONFIG_PM_SLEEP */
+
+extern int pm_is_forced_sleep(void);
 
 #ifdef CONFIG_PM
 
