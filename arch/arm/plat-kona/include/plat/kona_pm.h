@@ -50,4 +50,5 @@ extern void instrument_idle_exit(void);
 int kona_pm_disable_idle_state(int state, bool disable);
 int kona_pm_set_suspend_state(int state_inx);
 int kona_pm_cpu_lowpower(void);
+int pm_is_forced_sleep(void);
 #endif /*__KONA_PM_H__*/
