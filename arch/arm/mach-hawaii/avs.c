@@ -710,7 +710,7 @@ static int avs_ate_get_silicon_type(struct avs_info *avs_inf_ptr)
 		avs_inf_ptr->freq =
 			 pdata->ate_lut[avs_inf_ptr->avs_ate_val].freq;
 	}
-	avs_dbg(AVS_LOG_INIT, "%s: return silicon type %d freq %d\n",
+	avs_dbg(AVS_LOG_INIT, "%s: silicon type %d freq %d\n",
 			__func__, avs_inf_ptr->silicon_type, avs_inf_ptr->freq);
 	return 0;
 }
