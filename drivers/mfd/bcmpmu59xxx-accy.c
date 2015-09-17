@@ -819,10 +819,11 @@ static void bcmpmu_accy_isr(enum bcmpmu59xxx_irq irq, void *data)
 	case PMU_IRQ_USBOV:
 		pr_accy(FLOW, "### ISR PMU_IRQ_USBOV: %x\n",
 			PMU_IRQ_USBOV);
+		bcmpmu_chrgr_usb_en(bcmpmu, 0);	
 		break;
 	case PMU_IRQ_USBOV_DIS:
-		pr_accy(FLOW, "### ISR PMU_IRQ_USBOV_DIS: %x\n",
-			PMU_IRQ_USBOV_DIS);
+	case PMU_IRQ_CHGERRDIS:
+		pr_accy(FLOW, "### ISR %x\n", irq);
 		if (paccy->det_state == USB_CONNECTED) {
 			if (!bcmpmu_is_usb_host_enabled(bcmpmu))
 				bcmpmu_chrgr_usb_en(bcmpmu, 1);
@@ -1682,6 +1683,8 @@ static int __devinit bcmpmu_accy_probe(struct platform_device *pdev)
 	bcmpmu->register_irq(bcmpmu, PMU_IRQ_USBOV_DIS,
 				bcmpmu_accy_isr, paccy);
 #endif
+	bcmpmu->register_irq(bcmpmu, PMU_IRQ_CHGERRDIS,
+				bcmpmu_accy_isr, paccy);
 	bcmpmu->unmask_irq(bcmpmu, PMU_IRQ_USBINS);
 	bcmpmu->unmask_irq(bcmpmu, PMU_IRQ_USBRM);
 	bcmpmu->unmask_irq(bcmpmu, PMU_IRQ_CHGDET_LATCH);
@@ -1698,6 +1701,7 @@ static int __devinit bcmpmu_accy_probe(struct platform_device *pdev)
 	bcmpmu->unmask_irq(bcmpmu, PMU_IRQ_USBOV);
 	bcmpmu->unmask_irq(bcmpmu, PMU_IRQ_USBOV_DIS);
 #endif
+	bcmpmu->unmask_irq(bcmpmu, PMU_IRQ_CHGERRDIS);
 	/*
 	 * For  BB's BC detection we need to select BCDAVDD33 pin
 	 */
@@ -1754,6 +1758,7 @@ static int __devexit bcmpmu_accy_remove(struct platform_device *pdev)
 	bcmpmu->unregister_irq(bcmpmu, PMU_IRQ_USBOV);
 	bcmpmu->unregister_irq(bcmpmu, PMU_IRQ_USBOV_DIS);
 #endif
+	bcmpmu->unregister_irq(bcmpmu, PMU_IRQ_CHGERRDIS);
 	cancel_delayed_work_sync(&paccy->det_work);
 	cancel_work_sync(&paccy->adp_work);
 #ifdef CONFIG_HAS_WAKELOCK

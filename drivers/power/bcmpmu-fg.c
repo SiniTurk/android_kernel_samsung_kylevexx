@@ -1820,6 +1820,11 @@ static void  bcmpmu_fg_irq_handler(u32 irq, void *data)
 		fg->flags.prev_batt_status = fg->flags.batt_status;
 		fg->flags.batt_status = POWER_SUPPLY_STATUS_FULL;
 	}
+	
+	if ((irq == PMU_IRQ_MBTEMPHIGH) || (irq == PMU_IRQ_MBTEMPLOW)) {
+		pr_fg(FLOW, "%s: ISR : %x\n", __func__, irq);
+		bcmpmu_chrgr_usb_en(fg->bcmpmu, 0);
+	}
 
 	FG_UNLOCK(fg);
 }
@@ -3613,6 +3618,9 @@ static int bcmpmu_fg_suspend(struct platform_device *pdev, pm_message_t state)
 static int __devexit bcmpmu_fg_remove(struct platform_device *pdev)
 {
 	struct bcmpmu_fg_data *fg = platform_get_drvdata(pdev);
+	
+	fg->bcmpmu->unregister_irq(fg->bcmpmu, PMU_IRQ_MBTEMPHIGH);
+	fg->bcmpmu->unregister_irq(fg->bcmpmu, PMU_IRQ_MBTEMPLOW);
 
 	/* Disable FG */
 	bcmpmu_fg_enable(fg, false);
@@ -3750,6 +3758,23 @@ static int __devinit bcmpmu_fg_probe(struct platform_device *pdev)
 		ret = bcmpmu_fg_sw_maint_charging_init(fg);
 	}
 	clear_avg_sample_buff(fg);
+	
+	ret = fg->bcmpmu->register_irq(fg->bcmpmu, PMU_IRQ_MBTEMPHIGH,
+			bcmpmu_fg_irq_handler, fg);
+	if (ret) {
+		pr_fg(ERROR, "Failed to register PMU_IRQ_MBTEMPHIGH\n");
+		goto destroy_workq;
+	}
+
+	ret = fg->bcmpmu->register_irq(fg->bcmpmu, PMU_IRQ_MBTEMPLOW,
+			bcmpmu_fg_irq_handler, fg);
+	if (ret) {
+		pr_fg(ERROR, "Failed to register PMU_IRQ_MBTEMPLOW\n");
+		goto destroy_workq;
+	}
+
+	ret = fg->bcmpmu->unmask_irq(fg->bcmpmu, PMU_IRQ_MBTEMPHIGH);
+	ret = fg->bcmpmu->unmask_irq(fg->bcmpmu, PMU_IRQ_MBTEMPLOW);
 
 	/**
 	 * Run FG algorithm now
