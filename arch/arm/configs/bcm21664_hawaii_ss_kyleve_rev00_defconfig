@@ -33,7 +33,7 @@ CONFIG_IRQ_WORK=y
 
 
 # Enable samsung specific f_mtp
-CONFIG_USB_MTP_SAMSUNG=y
+# CONFIG_USB_MTP_SAMSUNG is not set
 
 #
 # General setup
