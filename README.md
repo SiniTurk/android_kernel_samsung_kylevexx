@@ -1,3 +1,3 @@
-You are free to use my work as base and you can use my kernel anywhere. I will not insult you for credits  but only thing i need (If you used my sources) at least one thanks on xda :)
+# Kernel source-code for Samsung Galaxy Trend Lite GT-S7392
 
-http://forum.xda-developers.com/member.php?u=7133498
+May used for S739xx too.
