@@ -13,7 +13,7 @@ cp -f ../arch/arm/boot/zImage ./zImage
 cp ../arch/arm/tools/boot.img-ramdisk.cpio.gz ./boot.img-ramdisk.cpio.gz
 cp ../arch/arm/tools/mkbootimg ./mkbootimg
 cp ../arch/arm/tools/META-INF_kylevess.zip ./META-INF.zip
-./mkbootimg --kernel zImage --ramdisk boot.img-ramdisk.cpio.gz --board kyleve --pagesize 4096 --base 0x82000000 -o boot.img
+./mkbootimg --kernel zImage --ramdisk boot.img-ramdisk.cpio.gz --board kylevess --pagesize 4096 --base 0x82000000 -o boot.img
 unzip META-INF.zip
 zip -r tmp META-INF boot.img
 mv -f tmp.zip ../flash.zip
