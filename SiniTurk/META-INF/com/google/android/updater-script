@@ -1,0 +1,11 @@
+assert(getprop("ro.product.device") == "kylevess" ||
+getprop("ro.build.product") == "kylevess" || 
+getprop("ro.product.device") == "S73920" ||
+getprop("ro.build.product") == "S7390" || 
+getprop("ro.product.device") == "GT-S7390" ||
+getprop("ro.build.product") == "GT-S7390" || 
+getprop("ro.product.device") == "hawaii" ||
+getprop("ro.build.product") == "hawaii" ||
+abort("This package is for device: kylevess,S7390,GT-S7390,hawaii; this device is " + getprop("ro.product.device") + "."););
+package_extract_file("boot.img", "/dev/block/platform/sdhci.1/by-name/KERNEL");
+show_progress(0.100000, 0);
