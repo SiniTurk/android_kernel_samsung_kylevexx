@@ -24,8 +24,8 @@
 #include <media/soc_camera.h>
 #include <linux/videodev2_brcm.h>
 #include <mach/clock.h>
-#include <camdrv_ss.h>
-#include <camdrv_ss_sr352.h>
+#include "camdrv_ss.h"
+#include "camdrv_ss_sr352.h"
 
 
 #define sr352_NAME	"sr352"

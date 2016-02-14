@@ -60,7 +60,7 @@ kylevess)
   echo " $choice selected"
   echo "################"
   echo "Creating boot.img"
-	./mkbootimg --kernel zImage --ramdisk kylevess-ramdisk.cpio.gz --board kylevess --pagesize 4096 --base 0x82000000 -o boot.img
+	./mkbootimg --kernel zImage --ramdisk kylevess-ramdisk.gz --board kylevess --pagesize 4096 --base 0x82000000 -o boot.img
   echo "boot.img has been created"
   echo "Setting-up updater-script for $choice"
 echo 'assert(getprop("ro.product.device") == "kylevess" ||
