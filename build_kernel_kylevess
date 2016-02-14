@@ -7,3 +7,16 @@ make -j8 ARCH=arm KBUILD_OUTPUT=./kernel_out
 cp -f ./kernel_out/arch/arm/boot/zImage ./arch/arm/boot/
 cp -rf ./kernel_out/arch/arm/boot/compressed/vmlinux ./arch/arm/boot/compressed/
 cp -rf ./kernel_out/vmlinux ./
+mkdir tmp
+cd tmp
+cp -f ../arch/arm/boot/zImage ./zImage
+cp ../arch/arm/tools/boot.img-ramdisk.cpio.gz ./boot.img-ramdisk.cpio.gz
+cp ../arch/arm/tools/mkbootimg ./mkbootimg
+cp ../arch/arm/tools/META-INF_kylevess.zip ./META-INF.zip
+./mkbootimg --kernel zImage --ramdisk boot.img-ramdisk.cpio.gz --board kyleve --pagesize 4096 --base 0x82000000 -o boot.img
+unzip META-INF.zip
+zip -r tmp META-INF boot.img
+mv -f tmp.zip ../flash.zip
+mv -f boot.img ../boot.img
+cd ../
+rm -rf tmp
