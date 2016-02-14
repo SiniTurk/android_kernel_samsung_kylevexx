@@ -1,0 +1,8 @@
+#!/bin/bash
+rm arch/arm/boot/zImage
+rm arch/arm/boot/compressed/vmlinux
+rm -rf kernel_out
+make clean && make mrproper
+rm boot.img
+rm flash.zip
+echo "Done"

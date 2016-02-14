@@ -54,7 +54,7 @@ static bool first_af_status = false;
 #define EXIF_MODEL		"GT-S6012"
 
 static DEFINE_MUTEX(af_cancel_op);
-extern inline struct camdrv_ss_state *to_state(struct v4l2_subdev *sd);
+extern struct camdrv_ss_state *to_state(struct v4l2_subdev *sd);
 
 
 
@@ -64,7 +64,7 @@ extern  int camdrv_ss_i2c_set_config_register(struct i2c_client *client,
           				                 char *name);
 extern int camdrv_ss_set_preview_size(struct v4l2_subdev *sd);
 extern int camdrv_ss_set_dataline_onoff(struct v4l2_subdev *sd, int onoff);
-extern inline struct camdrv_ss_state *to_state(struct v4l2_subdev *sd);
+extern struct camdrv_ss_state *to_state(struct v4l2_subdev *sd);
 
 //#define __JPEG_CAPTURE__ 1        //denis_temp ; yuv capture
 

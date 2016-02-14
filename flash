@@ -1,0 +1,4 @@
+#!/bin/bash
+adb push boot.img /dev/block/mmcblk0p5
+adb reboot
+rm -rf boot.img
