@@ -1,6 +1,6 @@
 VERSION = 3
 PATCHLEVEL = 4
-SUBLEVEL = 5
+SUBLEVEL = 6
 EXTRAVERSION =
 NAME = Saber-toothed Squirrel
 CROSS_COMPILE=/home/sr/omni5.1/prebuilts/gcc/linux-x86/arm/arm-eabi-4.6/bin/arm-eabi-
