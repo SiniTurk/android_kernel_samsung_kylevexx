@@ -42,6 +42,7 @@
 
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
+#include <net/bluetooth/smp.h>
 
 static void hci_le_connect(struct hci_conn *conn)
 {
