@@ -1,0 +1,14 @@
+#!/bin/bash
+adb root
+adb shell mount -o rw,remount /system
+adb push boot.img /system/bin/boot.img
+echo "#/bin/bash
+cd /system/bin
+dd if=boot.img of=/dev/block/mmcblk0p5" > tmp
+chmod 775 tmp
+adb push tmp /system/bin/tmp
+adb shell tmp
+adb shell rm /system/bin/boot.img
+adb shell rm /system/bin/tmp
+adb reboot
+rm tmp
