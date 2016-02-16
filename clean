@@ -4,5 +4,6 @@ rm arch/arm/boot/compressed/vmlinux
 rm -rf kernel_out
 make clean && make mrproper
 rm boot.img
-rm flash.zip
+rm flash_kyleve.zip
+rm flash_kylevess.zip
 echo "Done"

@@ -41,11 +41,18 @@ echo "#################"
 echo "Creating flashable zip"
 echo "#################"
 zip -r tmp META-INF boot.img
+echo "#################"
+echo "flashable zip has been created for $choice"
+echo "#################"
 mv -f tmp.zip ../flash_kyleve.zip
 mv -f boot.img ../boot.img
-cd ../
+echo "#################"
+echo "flashble zip is ready you can under"
+cd ..
 rm -rf tmp
-echo "flashable zip has been created for $choice"
+pwd
+echo "#################"
+cd ../
 exit
 
 ;;
@@ -83,11 +90,18 @@ echo "#################"
 echo "Creating flashable zip"
 echo "#################"
 zip -r tmp META-INF boot.img
+echo "#################"
+echo "flashable zip has been created for $choice."
+echo "#################"
 mv -f tmp.zip ../flash_kylevess.zip
 mv -f boot.img ../boot.img
-cd ../
+echo "#################"
+echo "flashble zip is ready you can under"
+cd ..
 rm -rf tmp
-echo "flashable zip has been created for $choice."
+pwd
+echo "#################"
+cd ../
 exit
 esac
 done
