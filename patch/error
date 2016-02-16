@@ -1,0 +1,7 @@
+diff --git a/fs/ext4/inode.c b/fs/ext4/inode.c
+index 9549547..a1624b9 100644
+--- a/fs/ext4/inode.c
++++ a/fs/ext4/inode.c
+@@ -3894 +3894 @@
+-	int need_datasync = 0;
++
