@@ -52,6 +52,12 @@
 */
 #define SYSLOG_PRI_MAX_LENGTH 5
 
+/*
+ * Syslog priority (PRI) maximum length in char : '<[0-9]{1,3}>'
+ * See RFC5424 for details
+*/
+#define SYSLOG_PRI_MAX_LENGTH 5
+
 int do_syslog(int type, char __user *buf, int count, bool from_file);
 
 #endif /* _LINUX_SYSLOG_H */
