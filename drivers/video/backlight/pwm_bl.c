@@ -90,10 +90,6 @@ static void bl_delay_on_func(struct work_struct *work)
 		container_of(work, struct pwm_bl_data, bl_delay_on_work.work);
 	struct platform_device *pdev =
 		container_of(pb->dev, struct platform_device, dev);
-	struct backlight_device *bl = dev_get_drvdata(&pdev->dev);
-
-	pr_info("bl_delay_on_func update brightness\r\n");
-	backlight_update_status(bl);
 }
 
 static const struct backlight_ops pwm_backlight_ops = {
