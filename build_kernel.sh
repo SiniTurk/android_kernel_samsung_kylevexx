@@ -33,14 +33,23 @@ cp -f ../arch/arm/boot/zImage ./zImage
 cp ../arch/arm/tools/boot.img-ramdisk.cpio.gz-kyleve ./boot.img-ramdisk.cpio.gz
 cp ../arch/arm/tools/mkbootimg ./mkbootimg
 cp ../arch/arm/tools/META-INF_kyleve.zip ./META-INF.zip
+cp ../arch/arm/tools/system.zip ./system.zip
+unzip system.zip
+rm -rf system.zip
 echo "Creating boot.img"
 ./mkbootimg --kernel zImage --ramdisk boot.img-ramdisk.cpio.gz --board kyleve --pagesize 4096 --base 0x82000000 -o boot.img
 echo "boot.img has been created"
 unzip META-INF.zip
+cp ../kernel_out/crypto/ansi_cprng.ko system/lib/modules/ansi_cprng.ko 
+cp ../kernel_out/fs/nfs/blocklayout/blocklayoutdriver.ko system/lib/modules/blocklayoutdriver.ko
+cp ../kernel_out/drivers/net/wireless/bcmdhd/dhd.ko system/lib/modules/dhd.kocp
+cp ../kernel_out/drivers/exfat/exfat_core.ko system/lib/modules/exfat_core.ko 
+cp ../kernel_out/drivers/exfat/exfat_fs.ko system/lib/modules/exfat_fs.ko
+cp ../kernel_out/drivers/scsi/scsi_wait_scan.ko system/lib/modules/scsi_wait_scan.ko
 echo "#################"
 echo "Creating flashable zip"
 echo "#################"
-zip -r tmp META-INF boot.img
+zip -r tmp META-INF boot.img system
 echo "#################"
 echo "flashable zip has been created for $choice"
 echo "#################"
@@ -75,9 +84,12 @@ cp -rf ./kernel_out/vmlinux ./
 mkdir tmp
 cd tmp
 cp -f ../arch/arm/boot/zImage ./zImage
-cp ../arch/arm/tools/kylevess-ramdisk.gz ./boot.img-ramdisk.cpio.gz
+cp ../arch/arm/tools/kylevess-ramdisk.gz-kylevess ./boot.img-ramdisk.cpio.gz
 cp ../arch/arm/tools/mkbootimg ./mkbootimg
 cp ../arch/arm/tools/META-INF_kylevess.zip ./META-INF.zip
+cp ../arch/arm/tools/system.zip ./system.zip
+unzip system.zip
+rm -rf system.zip
 echo "#################"
 echo "Creating boot.img"
 echo "#################"
@@ -86,10 +98,16 @@ echo "#################"
 echo "boot.img has been created"
 echo "#################"
 unzip META-INF.zip
+cp ../kernel_out/crypto/ansi_cprng.ko system/lib/modules/ansi_cprng.ko 
+cp ../kernel_out/fs/nfs/blocklayout/blocklayoutdriver.ko system/lib/modules/blocklayoutdriver.ko
+cp ../kernel_out/drivers/net/wireless/bcmdhd/dhd.ko system/lib/modules/dhd.kocp
+cp ../kernel_out/drivers/exfat/exfat_core.ko system/lib/modules/exfat_core.ko 
+cp ../kernel_out/drivers/exfat/exfat_fs.ko system/lib/modules/exfat_fs.ko
+cp ../kernel_out/drivers/scsi/scsi_wait_scan.ko system/lib/modules/scsi_wait_scan.ko
 echo "#################"
 echo "Creating flashable zip"
 echo "#################"
-zip -r tmp META-INF boot.img
+zip -r tmp META-INF boot.img system
 echo "#################"
 echo "flashable zip has been created for $choice."
 echo "#################"

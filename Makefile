@@ -3,7 +3,6 @@ PATCHLEVEL = 4
 SUBLEVEL = 5
 EXTRAVERSION =
 NAME = Saber-toothed Squirrel
-CROSS_COMPILE=/home/sr/cm12.1/prebuilts/gcc/linux-x86/arm/arm-eabi-4.6/bin/arm-eabi-
 
 # *DOCUMENTATION*
 # To see a list of typical targets execute "make help"
