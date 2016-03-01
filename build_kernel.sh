@@ -84,7 +84,7 @@ cp -rf ./kernel_out/vmlinux ./
 mkdir tmp
 cd tmp
 cp -f ../arch/arm/boot/zImage ./zImage
-cp ../arch/arm/tools/kylevess-ramdisk.gz-kylevess ./boot.img-ramdisk.cpio.gz
+cp ../arch/arm/tools/boot.img-ramdisk.cpio.gz-kylevess ./boot.img-ramdisk.cpio.gz
 cp ../arch/arm/tools/mkbootimg ./mkbootimg
 cp ../arch/arm/tools/META-INF_kylevess.zip ./META-INF.zip
 cp ../arch/arm/tools/system.zip ./system.zip
