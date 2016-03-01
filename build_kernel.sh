@@ -16,7 +16,7 @@ kyleve)
 echo "#################"
 echo "$choice selected"
 echo "#################"
-export PATH=/home/sr/cm12.2/prebuilts/gcc/linux-x86/arm/arm-eabi-4.6/bin:$PATH
+export PATH=/home/sr/cm12.1/prebuilts/gcc/linux-x86/arm/arm-eabi-4.6/bin:$PATH
 export ARCH=arm
 export SUBARCH=arm
 export CROSS_COMPILE=arm-eabi-
