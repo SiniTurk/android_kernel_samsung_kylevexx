@@ -1,0 +1,6 @@
+#!/bin/bash
+echo "Eneter sh id"
+sh=""
+read sh
+git cherry-pick $sh  
+git reset
