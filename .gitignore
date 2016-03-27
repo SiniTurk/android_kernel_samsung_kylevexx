@@ -6,4 +6,5 @@ arch/arm/boot/compressed/vmlinux
 arch/arm/boot/zImage
 vmlinux
 boot.img
-
+fs/sdcardfs/modules.builtin
+fs/sdcardfs/modules.order
