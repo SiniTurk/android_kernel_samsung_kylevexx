@@ -4,3 +4,5 @@ sh=""
 read sh
 git cherry-pick $sh  
 git reset
+git clean -f
+git checkout -f
