@@ -1,0 +1,9 @@
+flash_kyleve.zip
+kernel_out/
+*.*~
+*~
+arch/arm/boot/compressed/vmlinux
+arch/arm/boot/zImage
+vmlinux
+boot.img
+
