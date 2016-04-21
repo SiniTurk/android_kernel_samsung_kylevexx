@@ -16,7 +16,7 @@ kyleve)
 echo "#################"
 echo "$choice selected"
 echo "#################"
-export PATH=/home/sr/Gcc/arm-eabi-4.6/bin:$PATH
+export PATH=../android_prebuilts_gcc/arm-eabi-4.6/bin:$PATH
 export ARCH=arm
 export SUBARCH=arm
 export CROSS_COMPILE=arm-eabi-
