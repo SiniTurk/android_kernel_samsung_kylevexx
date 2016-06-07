@@ -36,6 +36,7 @@
 #include <linux/slab.h>
 #include <linux/seq_file.h>
 #include <linux/uaccess.h>
+#include <linux/vmalloc.h>
 #include <linux/debugfs.h>
 #include <linux/dma-buf.h>
 #ifdef CONFIG_ION_OOM_KILLER
@@ -98,6 +99,9 @@ struct ion_client {
 	int deathpending;
 	unsigned long timeout;
 #endif
+#ifdef CONFIG_ION_BCM
+	struct kref ref;
+#endif
 };
 
 /**
@@ -130,7 +134,8 @@ static int ion_debug_heap_freelist(struct ion_heap *heap);
  * Memory (in bytes) held by the client from the heap
  */
 static size_t ion_debug_heap_total(struct ion_client *client,
-		unsigned int id, size_t *shared);
+		unsigned int id, size_t *shared,
+		size_t *pss);
 
 /**
  * Print the status of all the heaps
@@ -142,13 +147,33 @@ static void ion_debug_print_heap_status(struct ion_device *dev,
 
 bool ion_buffer_fault_user_mappings(struct ion_buffer *buffer)
 {
-        return ((buffer->flags & ION_FLAG_CACHED) &&
-                !(buffer->flags & ION_FLAG_CACHED_NEEDS_SYNC));
+	return ((buffer->flags & ION_FLAG_CACHED) &&
+		!(buffer->flags & ION_FLAG_CACHED_NEEDS_SYNC));
 }
 
 bool ion_buffer_cached(struct ion_buffer *buffer)
 {
-        return !!(buffer->flags & ION_FLAG_CACHED);
+	return !!(buffer->flags & ION_FLAG_CACHED);
+}
+
+static inline struct page *ion_buffer_page(struct page *page)
+{
+	return (struct page *)((unsigned long)page & ~(1UL));
+}
+
+static inline bool ion_buffer_page_is_dirty(struct page *page)
+{
+	return !!((unsigned long)page & 1UL);
+}
+
+static inline void ion_buffer_page_dirty(struct page **page)
+{
+	*page = (struct page *)((unsigned long)(*page) | 1UL);
+}
+
+static inline void ion_buffer_page_clean(struct page **page)
+{
+	*page = (struct page *)((unsigned long)(*page) & ~(1UL));
 }
 
 /* this function should only be called while dev->lock is held */
@@ -176,8 +201,6 @@ static void ion_buffer_add(struct ion_device *dev,
 	rb_link_node(&buffer->node, parent, p);
 	rb_insert_color(&buffer->node, &dev->buffers);
 }
-
-static int ion_buffer_alloc_dirty(struct ion_buffer *buffer);
 
 static bool ion_heap_drain_freelist(struct ion_heap *heap);
 /* this function should only be called while dev->lock is held */
@@ -227,17 +250,23 @@ static struct ion_buffer *ion_buffer_create(struct ion_heap *heap,
 	}
 	buffer->sg_table = table;
 	if (ion_buffer_fault_user_mappings(buffer)) {
-		for_each_sg(buffer->sg_table->sgl, sg, buffer->sg_table->nents,
-			    i) {
-			if (sg_dma_len(sg) == PAGE_SIZE)
-				continue;
-			pr_err("%s: cached mappings that will be faulted in "
-			       "must have pagewise sg_lists\n", __func__);
-			ret = -EINVAL;
-			goto err;
+		int num_pages = PAGE_ALIGN(buffer->size) / PAGE_SIZE;
+		struct scatterlist *sg;
+		int i, j, k = 0;
+
+		buffer->pages = vmalloc(sizeof(struct page *) * num_pages);
+		if (!buffer->pages) {
+			ret = -ENOMEM;
+			goto err1;
 		}
 
-		ret = ion_buffer_alloc_dirty(buffer);
+		for_each_sg(table->sgl, sg, table->nents, i) {
+			struct page *page = sg_page(sg);
+
+			for (j = 0; j < sg_dma_len(sg) / PAGE_SIZE; j++)
+				buffer->pages[k++] = page++;
+		}
+
 		if (ret)
 			goto err;
 	}
@@ -264,6 +293,9 @@ static struct ion_buffer *ion_buffer_create(struct ion_heap *heap,
 err:
 	heap->ops->unmap_dma(heap, buffer);
 	heap->ops->free(buffer);
+err1:
+	if (buffer->pages)
+		vfree(buffer->pages);
 err2:
 	kfree(buffer);
 	return ERR_PTR(ret);
@@ -289,8 +321,8 @@ static void _ion_buffer_destroy(struct ion_buffer *buffer)
 			buffer->size>>10, buffer->flags, buffer->heap->name,
 			buffer->heap->used>>10);
 #endif
-	if (buffer->flags & ION_FLAG_CACHED)
-		kfree(buffer->dirty);
+	if (buffer->pages)
+		vfree(buffer->pages);
 	kfree(buffer);
 }
 
@@ -343,14 +375,16 @@ static void ion_buffer_remove_from_handle(struct ion_buffer *buffer)
 	 * is in the system
 	 */
 	mutex_lock(&buffer->lock);
-	buffer->handle_count--;
-	BUG_ON(buffer->handle_count < 0);
-	if (!buffer->handle_count) {
-		struct task_struct *task;
+	WARN_ON(buffer->handle_count <= 0);
+	if (buffer->handle_count > 0) {
+		buffer->handle_count--;
+		if (!buffer->handle_count) {
+			struct task_struct *task;
 
-		task = current->group_leader;
-		get_task_comm(buffer->task_comm, task);
-		buffer->pid = task_pid_nr(task);
+			task = current->group_leader;
+			get_task_comm(buffer->task_comm, task);
+			buffer->pid = task_pid_nr(task);
+		}
 	}
 	mutex_unlock(&buffer->lock);
 }
@@ -380,7 +414,12 @@ static void ion_handle_destroy(struct kref *kref)
 	struct ion_handle *handle = container_of(kref, struct ion_handle, ref);
 	struct ion_client *client = handle->client;
 	struct ion_buffer *buffer = handle->buffer;
+	char task_comm[TASK_COMM_LEN];
+	pid_t pid, client_pid;
 
+	client_pid = client->pid;
+	get_task_comm(task_comm, current->group_leader);
+	pid = task_pid_nr(current->group_leader);
 	mutex_lock(&buffer->lock);
 	while (handle->kmap_cnt)
 		ion_handle_kmap_put(handle);
@@ -390,6 +429,10 @@ static void ion_handle_destroy(struct kref *kref)
 		rb_erase(&handle->node, &client->handles);
 
 	ion_buffer_remove_from_handle(buffer);
+	pr_debug("(%16.s:%d) Freed handle(pid:%d) to buffer(%p) da(%#x) size(%d)KB flags(%#lx) from heap(%16.s) used(%d)KB\n",
+		task_comm, pid, client_pid, buffer,
+		buffer->dma_addr, buffer->size>>10, buffer->flags,
+		buffer->heap->name, buffer->heap->used>>10);
 	ion_buffer_put(buffer);
 
 	kfree(handle);
@@ -518,15 +561,17 @@ static void ion_debug_print_per_heap(struct ion_heap *heap)
 	size_t total_shared_size = 0;
 	int free_heap = 1;
 
-	pr_info("%16.s %16.s %16.s %16.s %16.s\n",
-			"client", "pid", "size", "shared", "oom_score_adj");
+	pr_info("%16.s %16.s %16.s %16.s %16.s %16.s\n",
+		"client", "pid", "size", "shared", "pss", "oom_score_adj");
 	pr_info("----------------------------------------------------\n");
 
 	for (n = rb_first(&dev->clients); n; n = rb_next(n)) {
 		size_t shared;
+		size_t pss;
 		struct ion_client *client = rb_entry(n, struct ion_client,
 						     node);
-		size_t size = ion_debug_heap_total(client, heap->id, &shared);
+		size_t size = ion_debug_heap_total(client, heap->id,
+						   &shared, &pss);
 		if (!size)
 			continue;
 		free_heap = 0;
@@ -534,14 +579,14 @@ static void ion_debug_print_per_heap(struct ion_heap *heap)
 			char task_comm[TASK_COMM_LEN];
 
 			get_task_comm(task_comm, client->task);
-			pr_info("%16.s %16u %13u KB %13u KB %16d\n",
+			pr_info("%16.s %16u %13u KB %13u KB %13u KB %16d\n",
 					task_comm, client->pid, (size>>10),
-					(shared>>10),
+					(shared>>10), (pss>>10),
 					client->task->signal->oom_score_adj);
 		} else {
-			pr_info("%16.s %16u %13u KB %13u KB\n",
+			pr_info("%16.s %16u %13u KB %13u KB %13u KB\n",
 					client->name, client->pid, (size>>10),
-					(shared>>10));
+					(shared>>10), (pss>>10));
 		}
 	}
 	if (free_heap)
@@ -615,6 +660,7 @@ static int ion_shrink(struct ion_device *dev, unsigned int heap_id_mask,
 	plist_for_each_entry(heap, &dev->heaps, node) {
 		struct ion_client *client;
 		int shared;
+		int pss;
 
 		/* if the caller didn't specify this heap id type */
 		if (!((1 << heap->id) & heap_id_mask))
@@ -642,7 +688,8 @@ static int ion_shrink(struct ion_device *dev, unsigned int heap_id_mask,
 			}
 			if (p->signal->oom_score_adj < min_oom_score_adj)
 				continue;
-			size = ion_debug_heap_total(client, heap->id, &shared);
+			size = ion_debug_heap_total(client, heap->id,
+						    &shared, &pss);
 			if (!size)
 				continue;
 			if (selected_client) {
@@ -1052,6 +1099,9 @@ struct ion_client *ion_client_create(struct ion_device *dev,
 	client->dev = dev;
 	client->handles = RB_ROOT;
 	mutex_init(&client->lock);
+#ifdef CONFIG_ION_BCM
+	kref_init(&client->ref);
+#endif
 	client->name = name;
 	client->task = task;
 	client->pid = pid;
@@ -1080,6 +1130,57 @@ struct ion_client *ion_client_create(struct ion_device *dev,
 }
 EXPORT_SYMBOL(ion_client_create);
 
+#ifdef CONFIG_ION_BCM
+/**
+ * The client is refcounted because the client may get accessed from
+ * another process - used by memtrack HAL.
+ *
+ * The reference of client is taken by a lookup with dev->lock held
+ * OR used from the fd which was used to create the client.
+ **/
+static void _ion_client_destroy(struct kref *kref)
+{
+	struct ion_client *client = container_of(kref, struct ion_client, ref);
+	struct ion_device *dev = client->dev;
+	struct rb_node *n;
+
+	pr_debug("%s: %d\n", __func__, __LINE__);
+
+	rb_erase(&client->node, &dev->clients);
+	debugfs_remove_recursive(client->debug_root);
+	up_write(&dev->lock);
+
+	while ((n = rb_first(&client->handles))) {
+		struct ion_handle *handle = rb_entry(n, struct ion_handle,
+						     node);
+		ion_handle_put(handle);
+	}
+
+	if (client->task)
+		put_task_struct(client->task);
+	kfree(client);
+}
+
+static void ion_client_get(struct ion_client *client)
+{
+	kref_get(&client->ref);
+}
+
+void ion_client_put(struct ion_client *client)
+{
+	struct ion_device *dev = client->dev;
+
+	down_write(&dev->lock);
+	if (!kref_put(&client->ref, _ion_client_destroy))
+		up_write(&dev->lock);
+}
+
+void ion_client_destroy(struct ion_client *client)
+{
+	ion_client_put(client);
+}
+
+#else
 void ion_client_destroy(struct ion_client *client)
 {
 	struct ion_device *dev = client->dev;
@@ -1100,6 +1201,7 @@ void ion_client_destroy(struct ion_client *client)
 
 	kfree(client);
 }
+#endif
 EXPORT_SYMBOL(ion_client_destroy);
 
 struct sg_table *ion_sg_table(struct ion_client *client,
@@ -1142,17 +1244,6 @@ static void ion_unmap_dma_buf(struct dma_buf_attachment *attachment,
 {
 }
 
-static int ion_buffer_alloc_dirty(struct ion_buffer *buffer)
-{
-	unsigned long pages = buffer->sg_table->nents;
-	unsigned long length = (pages + BITS_PER_LONG - 1)/BITS_PER_LONG;
-
-	buffer->dirty = kzalloc(length * sizeof(unsigned long), GFP_KERNEL);
-	if (!buffer->dirty)
-		return -ENOMEM;
-	return 0;
-}
-
 struct ion_vma_list {
 	struct list_head list;
 	struct vm_area_struct *vma;
@@ -1162,9 +1253,9 @@ static void ion_buffer_sync_for_device(struct ion_buffer *buffer,
 				       struct device *dev,
 				       enum dma_data_direction dir)
 {
-	struct scatterlist *sg;
-	int i;
 	struct ion_vma_list *vma_list;
+	int pages = PAGE_ALIGN(buffer->size) / PAGE_SIZE;
+	int i;
 
 	pr_debug("%s: syncing for device %s\n", __func__,
 		 dev ? dev_name(dev) : "null");
@@ -1173,11 +1264,12 @@ static void ion_buffer_sync_for_device(struct ion_buffer *buffer,
 		return;
 
 	mutex_lock(&buffer->lock);
-	for_each_sg(buffer->sg_table->sgl, sg, buffer->sg_table->nents, i) {
-		if (!test_bit(i, buffer->dirty))
-			continue;
-		dma_sync_sg_for_device(dev, sg, 1, dir);
-		clear_bit(i, buffer->dirty);
+	for (i = 0; i < pages; i++) {
+		struct page *page = buffer->pages[i];
+
+		if (ion_buffer_page_is_dirty(page))
+			__dma_page_cpu_to_dev(page, 0, PAGE_SIZE, dir);
+		ion_buffer_page_clean(buffer->pages + i);
 	}
 	list_for_each_entry(vma_list, &buffer->vmas, list) {
 		struct vm_area_struct *vma = vma_list->vma;
@@ -1191,21 +1283,18 @@ static void ion_buffer_sync_for_device(struct ion_buffer *buffer,
 int ion_vm_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 {
 	struct ion_buffer *buffer = vma->vm_private_data;
-	struct scatterlist *sg;
-	int i;
+	int ret;
 
 	mutex_lock(&buffer->lock);
-	set_bit(vmf->pgoff, buffer->dirty);
+	ion_buffer_page_dirty(buffer->pages + vmf->pgoff);
 
-	for_each_sg(buffer->sg_table->sgl, sg, buffer->sg_table->nents, i) {
-		if (i != vmf->pgoff)
-			continue;
-		dma_sync_sg_for_cpu(NULL, sg, 1, DMA_BIDIRECTIONAL);
-		vm_insert_page(vma, (unsigned long)vmf->virtual_address,
-			       sg_page(sg));
-		break;
-	}
+	BUG_ON(!buffer->pages || !buffer->pages[vmf->pgoff]);
+	ret = vm_insert_page(vma, (unsigned long)vmf->virtual_address,
+			     ion_buffer_page(buffer->pages[vmf->pgoff]));
 	mutex_unlock(&buffer->lock);
+	if (ret)
+		return VM_FAULT_ERROR;
+
 	return VM_FAULT_NOPAGE;
 }
 
@@ -1383,8 +1472,12 @@ int ion_share_dma_buf_fd(struct ion_client *client, struct ion_handle *handle)
 		return PTR_ERR(dmabuf);
 
 	fd = dma_buf_fd(dmabuf, O_CLOEXEC);
-	if (fd < 0)
+	if (fd < 0) {
+		pr_err("(%d:%d) Share/Map failed - ran out of fds\n",
+				task_pid_nr(current->group_leader),
+				task_pid_nr(current));
 		dma_buf_put(dmabuf);
+	}
 
 	return fd;
 }
@@ -1395,7 +1488,11 @@ struct ion_handle *ion_import_dma_buf(struct ion_client *client, int fd)
 	struct dma_buf *dmabuf;
 	struct ion_buffer *buffer;
 	struct ion_handle *handle;
+	char client_name[TASK_COMM_LEN];
+	pid_t pid;
 
+	get_task_comm(client_name, client->task);
+	pid = task_pid_nr(client->task);
 	dmabuf = dma_buf_get(fd);
 	if (IS_ERR_OR_NULL(dmabuf))
 		return ERR_PTR(PTR_ERR(dmabuf));
@@ -1423,6 +1520,10 @@ struct ion_handle *ion_import_dma_buf(struct ion_client *client, int fd)
 end:
 	mutex_unlock(&client->lock);
 	dma_buf_put(dmabuf);
+	pr_debug("(%16.s:%d) Imported buffer(%p) da(%#x) size(%d)KB flags(%#lx) from heap(%16.s) used(%d)KB\n",
+		client_name, pid, buffer, buffer->dma_addr,
+		buffer->size>>10, buffer->flags,
+		buffer->heap->name, buffer->heap->used>>10);
 	return handle;
 }
 EXPORT_SYMBOL(ion_import_dma_buf);
@@ -1582,12 +1683,14 @@ static const struct file_operations ion_fops = {
 };
 
 static size_t ion_debug_heap_total(struct ion_client *client,
-				   unsigned int id, size_t *shared)
+				   unsigned int id, size_t *shared,
+				   size_t *pss)
 {
 	size_t size = 0;
 	struct rb_node *n;
 
 	*shared = 0;
+	*pss = 0;
 	mutex_lock(&client->lock);
 	for (n = rb_first(&client->handles); n; n = rb_next(n)) {
 		struct ion_handle *handle = rb_entry(n,
@@ -1595,6 +1698,8 @@ static size_t ion_debug_heap_total(struct ion_client *client,
 						     node);
 		if (handle->buffer->heap->id == id) {
 			size += handle->buffer->size;
+			*pss += handle->buffer->size
+				/ handle->buffer->handle_count;
 			if (handle->buffer->handle_count > 1)
 				*shared += handle->buffer->size;
 		}
@@ -1614,15 +1719,17 @@ static int ion_debug_heap_show(struct seq_file *s, void *unused)
 	int free_heap = 1;
 
 	seq_printf(s, "%s:\n", heap->name);
-	seq_printf(s, "%16.s %16.s %16.s %16.s %16.s\n",
-			"client", "pid", "size", "shared", "oom_score_adj");
+	seq_printf(s, "%16.s %16.s %16.s %16.s %16.s %16.s\n",
+		   "client", "pid", "size", "shared", "pss", "oom_score_adj");
 	seq_printf(s, "----------------------------------------------------\n");
 
 	for (n = rb_first(&dev->clients); n; n = rb_next(n)) {
 		size_t shared;
+		size_t pss;
 		struct ion_client *client = rb_entry(n, struct ion_client,
 						     node);
-		size_t size = ion_debug_heap_total(client, heap->id, &shared);
+		size_t size = ion_debug_heap_total(client, heap->id,
+						   &shared, &pss);
 		if (!size)
 			continue;
 		free_heap = 0;
@@ -1630,14 +1737,14 @@ static int ion_debug_heap_show(struct seq_file *s, void *unused)
 			char task_comm[TASK_COMM_LEN];
 
 			get_task_comm(task_comm, client->task);
-			seq_printf(s, "%16.s %16u %13u KB %13u KB %16d\n",
+			seq_printf(s, "%16.s %16u %13u KB %13u KB %13u KB %16d\n",
 					task_comm, client->pid, (size>>10),
-					(shared>>10),
+					(shared>>10), (pss>>10),
 					client->task->signal->oom_score_adj);
 		} else {
-			seq_printf(s, "%16.s %16u %13u KB %13u KB\n",
+			seq_printf(s, "%16.s %16u %13u KB %13u KB %13u KB\n",
 					client->name, client->pid, (size>>10),
-					(shared>>10));
+					(shared>>10), (pss>>10));
 		}
 	}
 	if (free_heap)
@@ -1894,6 +2001,57 @@ void ion_unlock_buffer(struct ion_client *client,
 		struct ion_buffer *buffer)
 {
 	mutex_unlock(&buffer->lock);
+	mutex_unlock(&client->lock);
+}
+
+/* Get the ion client if present for the pid.
+ *
+ * Note: If multiple clients are present for same process, only the first
+ * one is used. This assumption holds trues as the broadcom userspace
+ * ION library opens only one instance of ION and re-uses same fd.
+ *
+ * A reference of the remote client is taken to ensure
+ * that remote client does not get closed while operating on it.
+ *
+ * Caller of this API need to ensure that reference to client is released
+ * after use.
+ **/
+struct ion_client *ion_client_get_from_pid(struct ion_client *client, pid_t pid)
+{
+	struct ion_client *client_tmp, *client_remote = NULL;
+	struct ion_device *dev = client->dev;
+	struct rb_node *n;
+
+	down_write(&dev->lock);
+	for (n = rb_first(&dev->clients); n; n = rb_next(n)) {
+		client_tmp = rb_entry(n, struct ion_client,
+				node);
+		if (client_tmp->pid == pid) {
+			client_remote = client_tmp;
+			ion_client_get(client_remote);
+			break;
+		}
+	}
+	up_write(&dev->lock);
+
+	return client_remote;
+}
+
+/**
+ * Call the callback function for every buffer allocated/imported by the client
+ */
+void ion_client_foreach_buffer(struct ion_client *client,
+		void (*process)(struct ion_buffer *buffer, void *arg),
+		void *arg)
+{
+	struct rb_node *n;
+
+	mutex_lock(&client->lock);
+	for (n = rb_first(&client->handles); n; n = rb_next(n)) {
+		struct ion_handle *handle = rb_entry(n, struct ion_handle,
+						     node);
+		process(handle->buffer, arg);
+	}
 	mutex_unlock(&client->lock);
 }
 #endif

@@ -57,7 +57,24 @@ void *ion_heap_map_kernel(struct ion_heap *heap,
 	vaddr = vmap(pages, npages, VM_MAP, pgprot);
 	vfree(pages);
 
+	if (vaddr == NULL)
+		return ERR_PTR(-ENOMEM);
+
 	return vaddr;
+}
+
+struct page *ion_heap_alloc_pages(struct ion_buffer *buffer, gfp_t gfp_flags,
+				  unsigned int order)
+{
+	struct page *page = alloc_pages(gfp_flags, order);
+
+	if (!page)
+		return page;
+
+	if (ion_buffer_fault_user_mappings(buffer))
+		split_page(page, order);
+
+	return page;
 }
 
 void ion_heap_unmap_kernel(struct ion_heap *heap,
@@ -167,6 +184,11 @@ struct ion_heap *ion_heap_create(struct ion_platform_heap *heap_data)
 		heap = ion_cma_heap_create(heap_data);
 		break;
 #endif
+#if defined(CONFIG_MM_SECURE_DRIVER)
+	case ION_HEAP_TYPE_SECURE:
+		heap = ion_secure_heap_create(heap_data);
+		break;
+#endif /* CONFIG_MM_SECURE_DRIVER */
 	default:
 		pr_err("%s: Invalid heap type %d\n", __func__,
 		       heap_data->type);
@@ -211,6 +233,11 @@ void ion_heap_destroy(struct ion_heap *heap)
 		ion_cma_heap_destroy(heap);
 		break;
 #endif
+#if defined(CONFIG_MM_SECURE_DRIVER)
+	case ION_HEAP_TYPE_SECURE:
+		ion_secure_heap_destroy(heap);
+		break;
+#endif /* CONFIG_MM_SECURE_DRIVER */
 	default:
 		pr_err("%s: Invalid heap type %d\n", __func__,
 		       heap->type);

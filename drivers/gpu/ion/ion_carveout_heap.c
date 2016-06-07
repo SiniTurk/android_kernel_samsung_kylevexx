@@ -135,7 +135,7 @@ struct sg_table *ion_carveout_heap_map_dma(struct ion_heap *heap,
 		pr_err("%16s: Failed iommu map buffer(%p) da(%#x) pa(%#lx) size(%#x)\n",
 				heap->name, buffer, buffer->dma_addr,
 				buffer->priv_phys, buffer->size);
-		return ERR_PTR(-ENOMEM);
+		goto err;
 	}
 #else
 	if (iommu_map(heap->domain, buffer->dma_addr, buffer->priv_phys,
@@ -143,7 +143,7 @@ struct sg_table *ion_carveout_heap_map_dma(struct ion_heap *heap,
 		pr_err("%16s: Failed iommu map buffer(%p) da(%#x) pa(%#lx) size(%#x)\n",
 				heap->name, buffer, buffer->dma_addr,
 				buffer->priv_phys, buffer->size);
-		return ERR_PTR(-ENOMEM);
+		goto err;
 	}
 #endif /* CONFIG_BCM_IOVMM */
 	pr_debug("%16s: iommu map buffer(%p) da(%#x) pa(%#lx) size(%#x)\n",
@@ -152,6 +152,11 @@ struct sg_table *ion_carveout_heap_map_dma(struct ion_heap *heap,
 #endif /* CONFIG_IOMMU_API */
 #endif /* CONFIG_ION_BCM */
 	return table;
+
+err:
+	sg_free_table(table);
+	kfree(table);
+	return ERR_PTR(-ENOMEM);
 }
 
 void ion_carveout_heap_unmap_dma(struct ion_heap *heap,
@@ -177,13 +182,18 @@ void ion_carveout_heap_unmap_dma(struct ion_heap *heap,
 void *ion_carveout_heap_map_kernel(struct ion_heap *heap,
 				   struct ion_buffer *buffer)
 {
+	void *ret;
 	int mtype = MT_MEMORY_NONCACHED;
 
 	if (buffer->flags & ION_FLAG_CACHED)
 		mtype = MT_MEMORY;
 
-	return __arm_ioremap(buffer->priv_phys, buffer->size,
+	ret = __arm_ioremap(buffer->priv_phys, buffer->size,
 			      mtype);
+	if (ret == NULL)
+		return ERR_PTR(-ENOMEM);
+
+	return ret;
 }
 
 void ion_carveout_heap_unmap_kernel(struct ion_heap *heap,
