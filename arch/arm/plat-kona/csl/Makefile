@@ -11,11 +11,8 @@
 # license other than the GPL, without Broadcom's express prior written
 # consent.
 #*****************************************************************************
-ifeq ($(CONFIG_SPLIT_VIDEO_CMD_MODE_INTERFACE),y)
-obj-$(CONFIG_KONA_DSI) += csl_dsi_video.o
-else
 obj-$(CONFIG_KONA_DSI) += csl_dsi.o
-endif
+
 obj-$(CONFIG_KONA_SMI) += csl_smi.o
 obj-$(CONFIG_KONA_VC4LITE) += csl_dma_vc4lite.o csl_tectl_vc4lite.o
 obj-$(CONFIG_MMDMA) += mmdma_drv.o

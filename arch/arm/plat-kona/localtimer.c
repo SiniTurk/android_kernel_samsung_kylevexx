@@ -25,9 +25,41 @@
 #include <linux/jiffies.h>
 #include <linux/delay.h>
 
+/*
+ * There are two local timer implementation.
+ * One to use the Kona AON timer itself as in Hawaii.
+ * The other one is if we choose to use the architecture
+ * timer (only available in A7 and friends) as in case of Java
+ *
+ * Note that from 3.9 onwards the world is moving away from
+ * local timers. This is done to just be in sync with hawaii
+ * But doing away with local timer is simple. We have
+ * commented registering to the CPU hotplug notification
+ * in arm_arch_timer.c. Just uncommenting that would do the trick.
+ */
+
+#ifdef CONFIG_USE_ARCH_TIMER_AS_LOCAL_TIMER
+#include <clocksource/arm_arch_timer.h>
+
+int __cpuinit local_timer_setup(struct clock_event_device *evt)
+{
+	return arch_timer_setup(evt);
+}
+
+void local_timer_stop(struct clock_event_device *evt)
+{
+	arch_timer_stop(evt);
+}
+
+#else  /* CONFIG_USE_ARCH_TIMER_AS_LOCAL_TIMER is not defined */
+
 #ifndef CONFIG_HAVE_ARM_TWD
-#define TICK_TIMER_NAME "aon-timer"
+#define TICK_TIMER_NAME TIMER_NAME"-timer"
+#if defined (CONFIG_ARCH_HAWAII)
 #define TICK_TIMER_OFFSET 2
+#elif defined (CONFIG_ARCH_JAVA)
+#define TICK_TIMER_OFFSET 0
+#endif
 
 struct kona_td {
 	struct kona_timer *kona_timer;
@@ -80,6 +112,51 @@ static void kona_tick_set_mode(enum clock_event_mode mode,
 }
 
 #ifdef CONFIG_LOCAL_TIMERS
+
+#ifdef CONFIG_1MHZ_SLV_SYSTEM_TIMER
+#define SLV_TIMER_RATE_HZ 1000000
+
+static int slv_timer_rate_is_set;
+static struct kona_timer *slv_timer;
+
+static cycle_t clksrc_read(struct clocksource *cs)
+{
+	cycle_t count = 0;
+
+	count = kona_timer_get_counter(slv_timer);
+	return count;
+}
+
+static void clksrc_suspend(struct clocksource *cs)
+{
+	kona_timer_suspend(slv_timer);
+}
+
+static void clksrc_resume(struct clocksource *cs)
+{
+	kona_timer_resume(slv_timer);
+}
+
+/*
+ * This is a dummy clock source that has no real usage except in system level
+ * suspend/resume, the suspend/resume callback in this dummy clock source can
+ * be used to disable/enable the 1 MHz slave timer clock
+ *
+ * Purposely drop to rating to 1 so the kernel time keeping system won't use
+ * it
+ */
+static struct clocksource dummy_clksrc = {
+	.name = "dummy_clksrc",
+	.rating = 1,
+	.read = clksrc_read,
+	.mask = CLOCKSOURCE_MASK(32),
+	.shift = 16,
+	.flags = 0,
+	.suspend = clksrc_suspend,
+	.resume = clksrc_resume,
+};
+#endif
+
 /*
  * Setup the local clock events for a CPU.
  */
@@ -90,8 +167,30 @@ int __cpuinit local_timer_setup(struct clock_event_device *evt)
 	struct timer_ch_cfg config;
 
 	pr_info("local_timer_setup called for %d\n", cpu);
-	/* allocate an AON timer channel as local tick timer
-	 */
+
+#ifdef CONFIG_1MHZ_SLV_SYSTEM_TIMER
+	if (!slv_timer_rate_is_set) {
+		if (kona_timer_module_set_rate("slave-timer",
+					SLV_TIMER_RATE_HZ)) {
+			pr_err("Failed to set slave-timer rate to %d\n",
+					SLV_TIMER_RATE_HZ);
+			return -EFAULT;
+		}
+		slv_timer_rate_is_set = 1;
+
+		/* use slave-timer channel 0 as a dummy clock source device */
+		slv_timer = kona_timer_request("slave-timer", 0);
+		if (!slv_timer) {
+			pr_err("Failed to allocate slave timer channel 0\n");
+			return -EFAULT;
+		}
+
+		dummy_clksrc.mult = clocksource_hz2mult(SLV_TIMER_RATE_HZ,
+				dummy_clksrc.shift);
+		clocksource_register(&dummy_clksrc);
+	}
+#endif
+
 	kona_td = (struct kona_td)__get_cpu_var(percpu_kona_td);
 
 	if (!kona_td.allocated) {
@@ -108,7 +207,7 @@ int __cpuinit local_timer_setup(struct clock_event_device *evt)
 			kona_td.kona_timer = get_timer_ptr(TICK_TIMER_NAME,
 					TICK_TIMER_OFFSET + cpu);
 			if (!kona_td.kona_timer) {
-				pr_err("%s: Failed to allocate %s channel %d",
+				pr_err("%s: Failed to allocate %s channel %d"
 					"as CPU %d local tick device\n",
 					__func__,
 				       TICK_TIMER_NAME,
@@ -138,7 +237,11 @@ int __cpuinit local_timer_setup(struct clock_event_device *evt)
 	evt->features = CLOCK_EVT_FEAT_ONESHOT;
 	evt->rating = 250;
 	evt->shift = 32;
+#ifdef CONFIG_1MHZ_SLV_SYSTEM_TIMER
+	evt->mult = div_sc(SLV_TIMER_RATE_HZ, NSEC_PER_SEC, evt->shift);
+#else
 	evt->mult = div_sc(CLOCK_TICK_RATE, NSEC_PER_SEC, evt->shift);
+#endif
 	evt->max_delta_ns = clockevent_delta2ns(MAX_KONA_COUNT_CLOCK, evt);
 	/* There is MIN_KONA_DELTA_CLOCK clock cycles delay in HUB Timer by
 	 * ASIC limitation. When min_delta_ns set N, real requested load value
@@ -149,7 +252,6 @@ int __cpuinit local_timer_setup(struct clock_event_device *evt)
 	per_cpu(percpu_kona_td, cpu) = kona_td;
 
 	clockevents_register_device(evt);
-
 	return 0;
 }
 
@@ -184,5 +286,8 @@ inline int local_timer_ack(void)
 {
 	return 1;
 }
+
 #endif /* CONFIG_LOCAL_TIMERS */
 #endif
+
+#endif /* CONFIG_USE_ARCH_TIMER_AS_LOCAL_TIMER */

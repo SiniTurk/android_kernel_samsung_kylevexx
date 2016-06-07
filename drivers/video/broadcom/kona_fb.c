@@ -40,6 +40,10 @@
 #include <video/kona_fb.h>
 #include <mach/io.h>
 #include <linux/delay.h>
+#include <mach/memory.h>
+#include <mach/io_map.h>
+#include <plat/reg_axipv.h>
+#include <asm/io.h>
 #ifdef CONFIG_FRAMEBUFFER_FPS
 #include <linux/fb_fps.h>
 #endif
@@ -48,12 +52,6 @@
 #endif
 #include <linux/clk.h>
 #include <plat/pi_mgr.h>
-
-#ifdef CONFIG_CPU_AT_TURBO_WHILE_LCD_ON
-#include <mach/pi_mgr.h>
-#include <plat/kona_cpufreq_drv.h>
-#endif
-
 #include <linux/broadcom/mobcom_types.h>
 #include <linux/reboot.h>
 #include <linux/kdebug.h>
@@ -81,7 +79,6 @@
 #ifdef CONFIG_BCM_IOVMM
 #include <plat/bcm_iommu.h>
 #endif
-
 #if defined(CONFIG_SEC_DEBUG)
 #include <mach/sec_debug.h>
 #endif
@@ -93,10 +90,6 @@
 #define KONA_IOCTL_GET_FB_IOVA			_IOR('F', 0x81, u32)
 
 static struct pi_mgr_qos_node g_mm_qos_node;
-
-#ifdef CONFIG_CPU_AT_TURBO_WHILE_LCD_ON
-struct cpufreq_lmt_node cpufreq_min_lmt_node_lcd;
-#endif
 
 #ifdef CONFIG_FB_BRCM_CP_CRASH_DUMP_IMAGE_SUPPORT
 static DEFINE_SPINLOCK(g_fb_crash_spin_lock);
@@ -135,10 +128,16 @@ struct kona_fb {
 	struct notifier_block die_nb;
 #endif
 	struct delayed_work vsync_smart;
+
+	size_t framesize_alloc;
+	struct iommu_domain *direct_domain;
+	struct sg_table *iovmm_table;
+	struct kona_fb_platform_data *fb_data;
+	struct platform_device *pdev;
 };
 
 static struct completion vsync_event;
-static struct kona_fb *g_kona_fb = NULL;
+static struct kona_fb *g_kona_fb;
 
 #ifdef CONFIG_FB_BRCM_CP_CRASH_DUMP_IMAGE_SUPPORT
 static void kona_fb_unpack_888rle(void *, void *, uint32_t, uint32_t, uint32_t);
@@ -150,8 +149,14 @@ static int kona_fb_reboot_cb(struct notifier_block *, unsigned long, void *);
 static int kona_fb_die_cb(struct notifier_block *, unsigned long, void *);
 #endif
 
+extern void backlight_control(int brigtness);
+
+static int lcd_boot_mode(char *);
+static int lcd_panel_setup(char *);
+
+static int need_page_alignment = 1;
 static char g_disp_str[DISPDRV_NAME_SZ];
-int g_display_enabled = 0;
+int g_display_enabled;
 extern int panel_read_id(void);
 
 #ifdef KONA_FB_DEBUG
@@ -193,12 +198,12 @@ proc_write_fb_test(struct file *file, const char __user *buffer,
 	value[len] = '\0';
 
 	num = simple_strtoul(value, NULL, 0);
-#ifdef CONFIG_FB_BRCM_CP_CRASH_DUMP_IMAGE_SUPPORT
+
 	if (num == 1)
 		kona_display_crash_image(0);
 	else
 		kona_display_crash_image(1);
-#endif
+
 	i = kona_fb_profile_cnt;
 	for (cnt = 0; cnt < KONA_PROF_N_RECORDS; cnt++) {
 		if (i != 0)
@@ -305,6 +310,157 @@ static inline void kona_clock_stop(struct kona_fb *fb)
 	fb->display_ops->stop(fb->display_hdl, &fb->dfs_node);
 }
 
+#ifdef CONFIG_IOMMU_API
+
+#if !defined (CONFIG_BCM_IOVMM) || !defined (CONFIG_PRERESERVE_BOOTLOADER_FB)
+static int kona_fb_direct_map(struct kona_fb *fb, size_t framesize_alloc,
+			dma_addr_t phys_fbbase, dma_addr_t dma_addr)
+{
+	struct iommu_domain *domain = NULL;
+	int ret = -ENXIO;
+	struct kona_fb_platform_data *fb_data = fb->fb_data;
+	struct platform_device *pdev = fb->pdev;
+
+	/* 1-to-1 mapping */
+	domain = iommu_domain_alloc(&platform_bus_type);
+	if (NULL == domain)
+		goto fail_alloc;
+
+	if (iommu_attach_device(domain, &pdev->dev)) {
+		ret = -EINVAL;
+		pr_err("%s Attaching dev(%p) to iommu dev(%p) failed\n",
+				"framebuffer", &pdev->dev,
+				&fb_data->pdev_iommu->dev);
+		goto fail_attach;
+	}
+
+	if (iommu_map(domain, dma_addr, phys_fbbase, framesize_alloc,
+				0)) {
+		ret = -EINVAL;
+		pr_err("%s iommu mapping domain(%p) da(%#x) to pa(%#x) size(%#08x) failed\n",
+				"framebuffer", domain, dma_addr,
+				phys_fbbase, framesize_alloc);
+		goto fail_map;
+	}
+
+	fb->direct_domain = domain;
+	pr_info("%s succ\n", __func__);
+	return 0;
+
+fail_map:
+	iommu_detach_device(domain, &pdev->dev);
+fail_attach:
+	iommu_domain_free(domain);
+fail_alloc:
+	pr_err("%s failed ret = %d\n", __func__, ret);
+	return ret;
+}
+#endif
+
+static int kona_fb_direct_unmap(struct kona_fb *fb,
+			size_t framesize_alloc, dma_addr_t dma_addr)
+{
+	struct iommu_domain *domain = fb->direct_domain;
+	struct platform_device *pdev = fb->pdev;
+
+	if (NULL == domain) {
+		pr_err("%s fail, direct_domain NULL\n", __func__);
+		return -EIO;
+	}
+
+	iommu_unmap(domain, dma_addr, framesize_alloc);
+
+	iommu_detach_device(domain, &pdev->dev);
+
+	iommu_domain_free(domain);
+
+	fb->direct_domain = NULL;
+	pr_info("%s succ\n", __func__);
+	return 0;
+}
+
+#ifdef CONFIG_BCM_IOVMM
+static int kona_fb_iovmm_map(struct kona_fb *fb, size_t framesize_alloc,
+			dma_addr_t phys_fbbase, dma_addr_t *p_dma_addr)
+{
+	int n_pages, i;
+	struct scatterlist *sg;
+	struct sg_table *table;
+	int ret = -ENXIO;
+	struct dma_iommu_mapping *mapping = NULL;
+	struct kona_fb_platform_data *fb_data = fb->fb_data;
+	struct platform_device *pdev = fb->pdev;
+	dma_addr_t dma_addr;
+
+	if (!fb_data->pdev_iovmm) {
+		ret = -EINVAL;
+		pr_err("%s: iovmm device not set\n", "framebuffer");
+		goto fail;
+	}
+	mapping = platform_get_drvdata(fb_data->pdev_iovmm);
+	arm_iommu_attach_device(&pdev->dev, mapping);
+	pr_info("%s iommu-mapping(%p)\n", "framebuffer", mapping);
+
+	table = kmalloc(sizeof(struct sg_table), GFP_KERNEL);
+	if (!table) {
+		ret = -ENOMEM;
+		pr_err("Unable to allocate fb sgtable\n");
+		goto fail;
+	}
+	n_pages = framesize_alloc >> PAGE_SHIFT;
+
+	i = sg_alloc_table(table, 1, GFP_KERNEL);
+	if (i) {
+		ret = -ENOMEM;
+		pr_err("sg_alloc_table failed\n");
+		goto fail_sg_alloc;
+	}
+	for_each_sg(table->sgl, sg, table->nents, i) {
+		struct page *page =
+			phys_to_page(phys_fbbase);
+		sg_set_page(sg, page, PAGE_SIZE * n_pages, 0);
+	}
+	dma_addr = arm_iommu_map_sgt(&pdev->dev, table, 0);
+	if (dma_addr == DMA_ERROR_CODE) {
+		ret = -EINVAL;
+		pr_err("%16s: Failed iommu map da(%#x) pa(%#x) size(%#x)\n",
+				"framebuffer", dma_addr, phys_fbbase,
+				framesize_alloc);
+		goto fail_map_sgt;
+	}
+
+	fb->iovmm_table = table;
+	*p_dma_addr = dma_addr;
+	pr_info("%s succ\n", __func__);
+	return 0;
+
+fail_map_sgt:
+	sg_free_table(table);
+fail_sg_alloc:
+	kfree(table);
+fail:
+	pr_err("%s failed ret = %d\n", __func__, ret);
+	return ret;
+}
+
+static int kona_fb_iovmm_unmap(struct kona_fb *fb,
+			size_t framesize_alloc, dma_addr_t dma_addr)
+{
+	struct platform_device *pdev = fb->pdev;
+
+	arm_iommu_unmap(&pdev->dev, dma_addr, framesize_alloc);
+
+	if (fb->iovmm_table) {
+		sg_free_table(fb->iovmm_table);
+		kfree(fb->iovmm_table);
+		fb->iovmm_table = NULL;
+	}
+
+	pr_info("%s succ\n", __func__);
+	return 0;
+}
+#endif
+#endif
 
 #ifdef CONFIG_FB_BRCM_CP_CRASH_DUMP_IMAGE_SUPPORT
 static void kona_fb_unpack_565rle(void *dst, void *src, uint32_t image_size,
@@ -516,7 +672,8 @@ static int kona_fb_pan_display(struct fb_var_screeninfo *var,
 		"kona FB/LCd is in the early suspend state and stops drawing now!");
 		goto skip_drawing;
 	}
-
+	if (!lcd_exist)
+		goto skip_drawing;
 	atomic_set(&fb->buff_idx, buff_idx);
 
 #ifdef CONFIG_FRAMEBUFFER_FPS
@@ -558,18 +715,10 @@ static int kona_fb_pan_display(struct fb_var_screeninfo *var,
 			p_region = NULL;
 		}
 		if (!fb->display_info->vmode){
-#ifdef CONFIG_FB_BRCM_LCD_EXIST_CHECK
-			if (lcd_exist){ 
-#endif
 				if (wait_for_completion_timeout(
-					&fb->prev_buf_done_sem,
-					msecs_to_jiffies(10000)) <= 0)
+			&fb->prev_buf_done_sem,	msecs_to_jiffies(10000)) <= 0 )
 				pr_err("%s:%d timed out waiting for completion",
 					__func__, __LINE__);
-#ifdef CONFIG_FB_BRCM_LCD_EXIST_CHECK
-			} else
-				goto skip_drawing;
-#endif
 		kona_clock_start(fb);
 		}
 		ret =
@@ -620,7 +769,8 @@ static void vsync_work_smart(struct work_struct* work)
 						vsync_smart.work);
 
 	complete(&vsync_event);
-	schedule_delayed_work(&fb->vsync_smart, msecs_to_jiffies(10));
+	usleep_range(15000,15010);
+	schedule_delayed_work(&fb->vsync_smart, 0);
 }
 
 static int enable_display(struct kona_fb *fb)
@@ -671,11 +821,12 @@ static int disable_display(struct kona_fb *fb)
 	if (!fb->display_info->vmode)
 		kona_clock_start(fb);
 	cancel_delayed_work_sync(&fb->vsync_smart);
-
+	if (g_kona_fb->is_display_found == 1)//Patch for PBA booting
 	fb->display_ops->power_control(fb->display_hdl, CTRL_PWR_OFF);
 	fb->display_ops->close(fb->display_hdl);
 	fb->display_ops->exit(fb->display_hdl);
 	kona_clock_stop(fb);
+	complete(&g_kona_fb->prev_buf_done_sem);
 	konafb_debug("kona display is disabled successfully\n");
 	return ret;
 }
@@ -749,9 +900,7 @@ static int kona_fb_ioctl(struct fb_info *info, unsigned int cmd,
 static void kona_fb_early_suspend(struct early_suspend *h)
 {
 	struct kona_fb *fb;
-#ifdef CONFIG_CPU_AT_TURBO_WHILE_LCD_ON
-		u32 freq_eco = 0;
-#endif
+
 	konafb_debug("BRCM fb early suspend with level = %d\n", h->level);
 
 	switch (h->level) {
@@ -759,14 +908,6 @@ static void kona_fb_early_suspend(struct early_suspend *h)
 	case EARLY_SUSPEND_LEVEL_BLANK_SCREEN:
 		/* Turn off the backlight */
 		fb = container_of(h, struct kona_fb, early_suspend_level1);
-#ifdef CONFIG_CPU_AT_TURBO_WHILE_LCD_ON
-		freq_eco = get_cpu_freq_from_opp(PI_OPP_ECONOMY);
-		if (freq_eco != 0){
-			printk("%s - cpufreq_update_lmt_req(ECONOMY)\n",__func__);
-			cpufreq_update_lmt_req(&cpufreq_min_lmt_node_lcd,
-								 freq_eco);
-		}
-#endif
 		mutex_lock(&fb->update_sem);
 		/* In case of video mode, DSI commands can be sent out-of-sync
 		 * of buffers */
@@ -827,9 +968,7 @@ static void kona_fb_late_resume(struct early_suspend *h)
 {
 	struct kona_fb *fb;
 	int framesize;
-#ifdef CONFIG_CPU_AT_TURBO_WHILE_LCD_ON
-		u32 freq_turbo;
-#endif
+
 	konafb_debug("BRCM fb late resume with level = %d\n", h->level);
 
 	switch (h->level) {
@@ -856,16 +995,6 @@ static void kona_fb_late_resume(struct early_suspend *h)
 		if (atomic_read(&g_kona_fb->force_update))
 			kona_display_crash_image(CP_CRASH_DUMP_START);
 #endif
-
-#ifdef CONFIG_CPU_AT_TURBO_WHILE_LCD_ON
-		freq_turbo = get_cpu_freq_from_opp(PI_OPP_SUPER_TURBO);
-		if (freq_turbo != 0){
-			printk("%s - cpufreq_update_lmt_req(TURBO)\n",__func__);
-			cpufreq_update_lmt_req(&cpufreq_min_lmt_node_lcd,
-								 freq_turbo);
-		}
-#endif
-
 		break;
 
 	case EARLY_SUSPEND_LEVEL_STOP_DRAWING:
@@ -894,24 +1023,19 @@ static void kona_fb_late_resume(struct early_suspend *h)
 
 			kona_clock_start(fb);
 		}
-#ifdef CONFIG_FB_BRCM_LCD_EXIST_CHECK
-		if (lcd_exist) {
-#endif
-			fb->display_ops->update(fb->display_hdl,
+		if(lcd_exist) {
+		fb->display_ops->update(fb->display_hdl,
 				fb->fb.var.yoffset ? fb->buff1 : fb->buff0,
 				NULL,
 				(DISPDRV_CB_T)kona_display_done_cb);
 
-			if (fb->display_info->vmode) {
-				if (wait_for_completion_timeout(
-					&fb->prev_buf_done_sem,
-					msecs_to_jiffies(1000)) <= 0)
-					pr_err("%s:%d timed out waiting for completion",
-						__func__, __LINE__);
-			}
-#ifdef CONFIG_FB_BRCM_LCD_EXIST_CHECK
+		if (fb->display_info->vmode) {
+			if (wait_for_completion_timeout(
+			&fb->prev_buf_done_sem,	msecs_to_jiffies(250)) <= 0)
+				pr_err("%s:%d timed out waiting for completion",
+					__func__, __LINE__);
 		}
-#endif
+		}
 		break;
 
 	default:
@@ -930,7 +1054,6 @@ void free_platform_data(struct device *dev)
 
 static int __init lcd_panel_setup(char *panel)
 {
-	printk("%s %d: lcd panel %s\n", __func__, __LINE__, panel);
 	if (panel && strlen(panel)) {
 		pr_err("bootloader has initialised %s\n", panel);
 		strcpy(g_disp_str, panel);
@@ -940,6 +1063,18 @@ static int __init lcd_panel_setup(char *panel)
 }
 __setup("lcd_panel=", lcd_panel_setup);
 
+
+static int __init lcd_boot_mode(char *mode)
+{
+	if (mode && strlen(mode)) {
+		if (!strcmp(mode, "recovery") || !strcmp(mode, "charger"))
+			need_page_alignment = 0;
+	}
+	return 1;
+}
+__setup("androidboot.mode=", lcd_boot_mode);
+
+#ifdef CONFIG_OF
 static struct kona_fb_platform_data * __init get_of_data(struct device_node *np)
 {
 	u32 val;
@@ -956,13 +1091,8 @@ static struct kona_fb_platform_data * __init get_of_data(struct device_node *np)
 		goto alloc_failed;
 	}
 
-	printk("%s %d: before get module-name.\n", __func__, __LINE__);
 	if (of_property_read_string(np,	"module-name", &str))
 		goto of_fail;
-
-	if(DISPDRV_NAME_SZ)
-	printk("%s %d: DISPDRV_NAME_SZ: %s\n", __func__, __LINE__, DISPDRV_NAME_SZ);
-
 	if (unlikely(strlen(str) > DISPDRV_NAME_SZ))
 		goto of_fail;
 	if (g_display_enabled && strcmp(str, g_disp_str)) {
@@ -970,8 +1100,7 @@ static struct kona_fb_platform_data * __init get_of_data(struct device_node *np)
 		goto of_fail;
 	}
 	strcpy(fb_data->name, str);
-	printk("%s %d: get fb_data->name from device node: %s\n",
-		__func__, __LINE__, fb_data->name);
+
 	if (of_property_read_string(np, "reg-name", &str))
 		goto of_fail;
 	if (unlikely(strlen(str) > DISPDRV_NAME_SZ))
@@ -1102,6 +1231,7 @@ of_fail:
 alloc_failed:
 	return NULL;
 }
+#endif /* CONFIG_OF */
 
 static char *get_seq(DISPCTRL_REC_T *rec)
 {
@@ -1223,7 +1353,12 @@ static int __init populate_dispdrv_cfg(struct kona_fb *fb,
 	/* Hardcode for now */
 	info->in_fmt = pd->col_mod_i;
 	info->out_fmt = pd->col_mod_o;
-	info->Bpp = 4;
+	if (info->in_fmt == DISPDRV_FB_FORMAT_RGB666U ||
+			info->in_fmt == DISPDRV_FB_FORMAT_RGB666P ||
+			info->in_fmt == DISPDRV_FB_FORMAT_RGB565)
+		info->Bpp = 2;
+	else
+		info->Bpp = 4;
 
 	info->phys_width = cfg->phys_width;
 	info->phys_height = cfg->phys_height;
@@ -1249,6 +1384,9 @@ static int __init populate_dispdrv_cfg(struct kona_fb *fb,
 	memcpy(info->phy_timing, cfg->phy_timing, sizeof(info->phy_timing));
 	if (info->vmode) {
 		info->init_seq = get_seq(cfg->init_vid_seq);
+#ifdef CONFIG_LCD_LOW_TEMP_CONVERSION
+		info->init_lowtemp_seq = get_seq(cfg->init_vid_lowtemp_seq);
+#endif		
 		info->hs = cfg->hs;
 		info->hbp = cfg->hbp;
 		info->hfp = cfg->hfp;
@@ -1331,8 +1469,11 @@ static struct fb_ops kona_fb_ops = {
 };
 
 #ifdef CONFIG_PRERESERVE_BOOTLOADER_FB
-extern void free_bootloader_fb();
+extern void free_bootloader_fb(void);
 #endif
+int sum = 0;
+int reset_skip=0;
+EXPORT_SYMBOL(reset_skip);
 
 static int __ref kona_fb_probe(struct platform_device *pdev)
 {
@@ -1342,23 +1483,19 @@ static int __ref kona_fb_probe(struct platform_device *pdev)
 	uint32_t width, height;
 	int ret_val = -1;
 	struct kona_fb_platform_data *fb_data;
-	dma_addr_t phys_fbbase, dma_addr;
+	dma_addr_t phys_fbbase, dma_addr, direct_dma_addr;
 	uint64_t pixclock_64;
-#ifdef CONFIG_IOMMU_API
-#ifdef CONFIG_BCM_IOVMM
-	struct dma_iommu_mapping *mapping;
-#else
-	struct iommu_domain *domain;
-#endif /* CONFIG_BCM_IOVMM */
-#endif /* CONFIG_IOMMU_API */
 #ifdef CONFIG_LOGO
 	int logo_rotate;
 #endif
+	uint32_t uboot_phys;
+	void *uboot_kvirt = NULL;
+	int need_map_switch = 0;
+	int lcd_check =0;
 
 	konafb_info("start\n");
-
 	if (g_kona_fb && (g_kona_fb->is_display_found == 1)) {
-		konafb_info("A right display device is already found!\n");
+		konafb_info("A right display device is already found! : %d\n", g_kona_fb->is_display_found);
 		return -EINVAL;
 	}
 
@@ -1371,10 +1508,9 @@ static int __ref kona_fb_probe(struct platform_device *pdev)
 	fb->g_stop_drawing = 0;
 
 	g_kona_fb = fb;
-	printk("%s %d: initialized g_kona_fb\n", __func__, __LINE__);
 	ret_val =
 	    pi_mgr_dfs_add_request(&g_kona_fb->dfs_node, "lcd", PI_MGR_PI_ID_MM,
-				   PI_OPP_NORMAL);
+				   PI_OPP_ECONOMY);
 
 	if (ret_val) {
 		printk(KERN_ERR "Failed to add dfs request for LCD\n");
@@ -1382,23 +1518,23 @@ static int __ref kona_fb_probe(struct platform_device *pdev)
 		goto fb_dfs_fail;
 	}
 
+#ifdef CONFIG_OF
 	if (pdev->dev.of_node) {
 		fb_data = get_of_data(pdev->dev.of_node);
-		if (!fb_data) {
-			printk("%s %d: before goto fb_data_failed;\n", __func__, __LINE__);
+		if (!fb_data)
 			goto fb_data_failed;
-		} else { /* Save the pointer needed in remove method */
+		else /* Save the pointer needed in remove method */
 			pdev->dev.platform_data = fb_data;
-		}
 	} else {
+#endif
 		fb_data = pdev->dev.platform_data;
 		if (!fb_data) {
 			ret = -EINVAL;
 			goto fb_data_failed;
-		} else{
-			printk("%s %d: use pdev->dev.platform_data;\n", __func__, __LINE__);
 		}
+#ifdef CONFIG_OF
 	}
+#endif
 
 	if (populate_dispdrv_cfg(fb, fb_data))
 		goto dispdrv_data_failed;
@@ -1406,8 +1542,11 @@ static int __ref kona_fb_probe(struct platform_device *pdev)
 	pr_err("Initialising in %s mode\n", fb->display_info->vmode ?
 						"VIDEO" : "COMMAND");
 	fb->display_ops = (DISPDRV_T *)DISP_DRV_GetFuncTable();
+
 	spin_lock_init(&fb->lock);
 	platform_set_drvdata(pdev, fb);
+	fb->fb_data = fb_data;
+	fb->pdev = pdev;
 
 	mutex_init(&fb->update_sem);
 	atomic_set(&fb->buff_idx, 0);
@@ -1420,18 +1559,38 @@ static int __ref kona_fb_probe(struct platform_device *pdev)
 
 	ret = enable_display(fb);
 	if (ret) {
-		printk("Failed to enable this display device\n");
+		konafb_error("Failed to enable this display device\n");
 		goto err_enable_display_failed;
 	} else {
 		fb->is_display_found = 1;
 	}
 
+	lcd_check = panel_read_id();
+
+	if(lcd_check<=0){
+		if (sum==0) {
+		printk("[LCD] wrong lcd\n");
+		sum=sum+1;
+		g_kona_fb->is_display_found = 0;	
+			goto err_fbmem_alloc_failed;
+		} else {
+			konafb_error("Maybe LCD is NOT connected!\n");
+			lcd_exist = 0; //  0 means LCD is not connected.
+		}
+	} else
+		lcd_exist = 1; //reset lcd_exist = 1 since kona_fb_probe may be called multiple times
+
 	framesize = fb->display_info->width * fb->display_info->height *
 	    fb->display_info->Bpp;
-	framesize = PAGE_ALIGN(framesize) * 2;
+
+	if (need_page_alignment)
+		framesize = PAGE_ALIGN(framesize);
+	framesize *= 2;
+
 	/* Workaround: One page extra allocated and mapped via m4u to avoid
 	 * v3d write faulting in m4u doing extra access */
 	framesize_alloc = PAGE_ALIGN(framesize + 4096);
+	fb->framesize_alloc = framesize_alloc;
 
 	fb->fb.screen_base = dma_alloc_writecombine(&pdev->dev,
 			framesize_alloc,
@@ -1446,80 +1605,38 @@ static int __ref kona_fb_probe(struct platform_device *pdev)
 		goto err_fbmem_alloc_failed;
 	}
 	dma_addr = phys_fbbase;
+	direct_dma_addr = dma_addr;
 
 #ifdef CONFIG_IOMMU_API
 	pdev->dev.archdata.iommu = &fb_data->pdev_iommu->dev;
 	pr_info("%s iommu-device(%p)\n", "framebuffer",
 			pdev->dev.archdata.iommu);
 #ifdef CONFIG_BCM_IOVMM
-	{
-		int n_pages, i;
-		struct scatterlist *sg;
-		struct sg_table *table;
+/* PRERESERVE_BOOTLOADER_FB is used for SS project */
+#ifndef CONFIG_PRERESERVE_BOOTLOADER_FB
+	need_map_switch = g_display_enabled && fb->display_info->vmode;
 
-		if (!fb_data->pdev_iovmm) {
-			ret = -EINVAL;
-			pr_err("%s: iovmm device not set\n", "framebuffer");
-			goto err_set_var_failed;
-		}
-		mapping = platform_get_drvdata(fb_data->pdev_iovmm);
-		arm_iommu_attach_device(&pdev->dev, mapping);
-		pr_info("%s iommu-mapping(%p)\n", "framebuffer", mapping);
-
-		table = kmalloc(sizeof(struct sg_table), GFP_KERNEL);
-		if (!table) {
-			ret = -ENOMEM;
-			pr_err("Unable to allocate fb sgtable\n");
-			goto err_set_var_failed;
-		}
-		n_pages = framesize_alloc >> PAGE_SHIFT;
-
-		i = sg_alloc_table(table, 1, GFP_KERNEL);
-		if (i) {
-			ret = -ENOMEM;
-			pr_err("sg_alloc_table failed\n");
-			kfree(table);
-			goto err_set_var_failed;
-		}
-		for_each_sg(table->sgl, sg, table->nents, i) {
-			struct page *page =
-				phys_to_page(phys_fbbase);
-			sg_set_page(sg, page, PAGE_SIZE * n_pages, 0);
-		}
-		dma_addr = arm_iommu_map_sgt(&pdev->dev, table, 0);
-		if (dma_addr == DMA_ERROR_CODE) {
-			ret = -EINVAL;
-			pr_err("%16s: Failed iommu map da(%#x) pa(%#x) size(%#x)\n",
-					"framebuffer", dma_addr, phys_fbbase,
-					framesize_alloc);
-			sg_free_table(table);
-			kfree(table);
+	if (need_map_switch) {
+		/* 1:1 map for uboot logo */
+		ret = kona_fb_direct_map(fb,
+				framesize_alloc, phys_fbbase, direct_dma_addr);
+		if (ret < 0) {
+			pr_err("kona_fb_direct_map failed\n");
 			goto err_set_var_failed;
 		}
 	}
+#endif
+	ret = kona_fb_iovmm_map(fb, framesize_alloc, phys_fbbase, &dma_addr);
 #else
-	{
-		/* 1-to-1 mapping */
-		domain = iommu_domain_alloc(&platform_bus_type);
-		if (iommu_attach_device(domain, &pdev->dev)) {
-			ret = -EINVAL;
-			pr_err("%s Attaching dev(%p) to iommu dev(%p) failed\n",
-					"framebuffer", &pdev->dev,
-					&fb_data->pdev_iommu->dev);
-			goto err_set_var_failed;
-		}
-		if (iommu_map(domain, dma_addr, phys_fbbase, framesize_alloc,
-					0)) {
-			ret = -EINVAL;
-			pr_err("%s iommu mapping domain(%p) da(%#x) to pa(%#x) size(%#08x) failed\n",
-					"framebuffer", domain, dma_addr,
-					phys_fbbase, framesize_alloc);
-			goto err_set_var_failed;
-		}
-	}
+	ret = kona_fb_direct_map(fb,
+			framesize_alloc, phys_fbbase, direct_dma_addr);
 #endif /* CONFIG_BCM_IOVMM */
 	pr_info("%16s: iommu map da(%#x) pa(%#x) size(%#x)\n",
 			"framebuffer", dma_addr, phys_fbbase, framesize_alloc);
+	if (ret < 0) {
+		pr_err("kona_fb_iommu_mapping failed\n");
+		goto err_set_var_failed;
+	}
 #endif /* CONFIG_IOMMU_API */
 
 	/* Now we should get correct width and height for this display .. */
@@ -1555,6 +1672,8 @@ static int __ref kona_fb_probe(struct platform_device *pdev)
 	fb->fb.var.rotate = fb_data->rotation;
 
 	switch (fb->display_info->in_fmt) {
+	case DISPDRV_FB_FORMAT_RGB666P:
+	case DISPDRV_FB_FORMAT_RGB666U:
 	case DISPDRV_FB_FORMAT_RGB565:
 		fb->fb.var.red.offset = 11;
 		fb->fb.var.red.length = 5;
@@ -1599,7 +1718,7 @@ static int __ref kona_fb_probe(struct platform_device *pdev)
 #if defined(CONFIG_CMA)
 	sec_getlog_supply_fbinfo(fb->fb.screen_base, fb->fb.var.xres, fb->fb.var.yres, fb->fb.var.bits_per_pixel,2);
 #else
-	sec_getlog_supply_fbinfo((vmalloc_to_pfn(fb->fb.screen_base)<<PAGE_SHIFT)-PHYS_OFFSET+PAGE_OFFSET,
+	sec_getlog_supply_fbinfo((void*)((vmalloc_to_pfn(fb->fb.screen_base)<<PAGE_SHIFT)-PHYS_OFFSET+PAGE_OFFSET),
 		fb->fb.var.xres, fb->fb.var.yres, fb->fb.var.bits_per_pixel,2);
 #endif
 #endif
@@ -1615,52 +1734,67 @@ static int __ref kona_fb_probe(struct platform_device *pdev)
 		goto err_set_var_failed;
 	}
 
-	if (g_display_enabled)
-		fb->display_ops->power_control(fb->display_hdl,
-						CTRL_SCREEN_OFF);
+	if (need_map_switch) {
+		uboot_phys = readl(KONA_AXIPV_VA + REG_CUR_FRAME);
+		uboot_kvirt = ioremap_nocache(uboot_phys, framesize / 2);
+		pr_info("Copy uboot logo to fb, phys 0x%x kvirt 0x%x\n",
+				uboot_phys, (uint32_t)uboot_kvirt);
+		if (uboot_kvirt) {
+			/* memcopy uboot buffer to kernel's buff1 */
+			memcpy(fb->fb.screen_base + (framesize / 2),
+				uboot_kvirt, framesize / 2);
+			iounmap(uboot_kvirt);
+			/* update display with 1:1 map */
+			if (!fb->display_info->vmode)
+				kona_clock_start(fb);
+			ret = fb->display_ops->update(fb->display_hdl,
+				(void *)phys_fbbase +
+				(framesize / 2), NULL, NULL);
+			if (!fb->display_info->vmode)
+				kona_clock_stop(fb);
+			if (ret) {
+				konafb_error("Can not enable the LCD!\n");
+				goto err_fb_register_failed;
+			}
+			/* Wait new buffer. TODO: checking frame end */
+			usleep_range(16666, 16668);
+		}
+	}
 
 #ifdef CONFIG_IOMMU_API
 	if (bcm_iommu_enable(&pdev->dev) < 0)
 		konafb_error("bcm_iommu_enable failed\n");
 #endif
-	/* Paint it black (assuming default fb contents are all zero) */
+
 	if (!fb->display_info->vmode)
 		kona_clock_start(fb);
-	ret = fb->display_ops->update(fb->display_hdl, fb->buff1, NULL, NULL);
+	/* Paint it black (assuming default fb contents are all zero) */
+	/* Or Paint it with the logo uboot has initliased */
+	//ret = fb->display_ops->update(fb->display_hdl,
+	//		fb->buff1, NULL, NULL);
 	if (ret) {
 		konafb_error("Can not enable the LCD!\n");
 		/* Stop esc_clock in cmd mode since disable_display
 		 * again starts clock for cmd mode */
 		if (!fb->display_info->vmode)
 			kona_clock_stop(fb);
-#ifdef CONFIG_FB_BRCM_LCD_EXIST_CHECK
-		if (ret==-1) {
-			konafb_error("Maybe LCD is NOT connected!\n");
-			lcd_exist = 0; /*  0 means LCD is not connected.*/
-		} else {
 			goto err_fb_register_failed;
-		}
-#else
-		goto err_fb_register_failed;
-#endif
+
 	}
-
-#ifdef CONFIG_IOMMU_API
-	if (g_display_enabled) {
-		usleep_range(16666, 16668); /* To switch to new buffer */
-		usleep_range(16666, 16668); /* To transfer 1 full buffer */
-	}
-#endif
-
-	ret = panel_read_id();
-
-	if(ret<0) 
-			lcd_exist = 0; //  0 means LCD is not connected.
 
 	/* Display on after painted blank */
 	fb->display_ops->power_control(fb->display_hdl, CTRL_SCREEN_ON);
 	if (!fb->display_info->vmode)
 		kona_clock_stop(fb);
+
+	if (need_map_switch) {
+		/* To switch to new buffer. TODO: checking frame update end */
+		usleep_range(16666, 16668);
+#ifdef CONFIG_IOMMU_API
+		/* unmap the uboot direct map */
+		kona_fb_direct_unmap(fb, framesize_alloc, direct_dma_addr);
+#endif
+	}
 
 	ret = register_framebuffer(&fb->fb);
 	if (ret) {
@@ -1728,6 +1862,8 @@ static int __ref kona_fb_probe(struct platform_device *pdev)
 	fb->die_nb.notifier_call = kona_fb_die_cb;
 	register_die_notifier(&fb->die_nb);
 #endif
+	reset_skip=1;
+
 	return 0;
 
 err_fb_register_failed:
@@ -1758,17 +1894,17 @@ static int kona_fb_reboot_cb(struct notifier_block *nb,
 	struct fb_event event;
 	int blank = FB_BLANK_POWERDOWN;
 
-	/*shut down the backlight before disable the display*/
-	pr_info("Turning off backlight\r\n");
-	event.info = &fb->fb;
-	event.data = &blank;
-	fb_notifier_call_chain(FB_EVENT_BLANK, &event);
-
 	pr_err("Turning off display\n");
 	if (fb->g_stop_drawing) {
 		pr_err("Display is already suspended, nothing to do\n");
 		goto exit;
 	}
+
+	/*shut down the backlight before disable the display*/
+	pr_info("Turning off backlight\r\n");
+	event.info = &fb->fb;
+	event.data = &blank;
+	fb_notifier_call_chain(FB_EVENT_BLANK, &event);
 
 	mutex_lock(&fb->update_sem);
 	fb->g_stop_drawing = 1;
@@ -1826,6 +1962,13 @@ static int __devexit kona_fb_remove(struct platform_device *pdev)
 #endif
 	unregister_framebuffer(&fb->fb);
 	disable_display(fb);
+#ifdef CONFIG_IOMMU_API
+#ifdef CONFIG_BCM_IOVMM
+	kona_fb_iovmm_unmap(fb, fb->framesize_alloc, (dma_addr_t)fb->buff0);
+#else
+	kona_fb_direct_unmap(fb, fb->framesize_alloc, (dma_addr_t)fb->buff0);
+#endif
+#endif
 	if (pdev->dev.of_node) {
 		kfree(pdata);
 		pdev->dev.platform_data = NULL;
@@ -1856,29 +1999,19 @@ static struct platform_driver kona_fb_driver = {
 static int __init kona_fb_init(void)
 {
 	int ret;
-#ifdef CONFIG_CPU_AT_TURBO_WHILE_LCD_ON
-		u32 freq_turbo = 0;
-#endif
+
 	/* To set g_display_enabled = 1, 
 	     you should use kernel parameter like this "lcd_panel=[LCD Module name]"
 	     e.g. "lcd_panel=HX8369" */     
 	g_display_enabled = 1;
-	strcpy(g_disp_str, "HX8369");
+	//strcpy(g_disp_str, "HX8369");
 	//This setting is temporary used for testing
 	
 	ret =
 	    pi_mgr_qos_add_request(&g_mm_qos_node, "lcd", PI_MGR_PI_ID_MM, 10);
 	if (ret)
 		printk(KERN_ERR "failed to register qos client for lcd\n");
-#ifdef CONFIG_CPU_AT_TURBO_WHILE_LCD_ON
 
-	freq_turbo = get_cpu_freq_from_opp(PI_OPP_SUPER_TURBO);
-	if (freq_turbo != 0){
-		cpufreq_add_lmt_req(&cpufreq_min_lmt_node_lcd, "hawaii_lcd",
-						freq_turbo, MIN_LIMIT);
-		printk("%s-cpufreq_add_lmt_req(PI_OPP_SUPER_TURBO)\n",__func__);
-	}
-#endif
 	ret = platform_driver_register(&kona_fb_driver);
 	if (ret) {
 		printk(KERN_ERR
@@ -1927,8 +2060,9 @@ void kona_fb_esd_hw_reset(void)
 	kona_clock_stop(g_kona_fb);
 
 	konafb_info("turn on lcd\n");
-	if (enable_display(g_kona_fb))
+	if (enable_display(g_kona_fb)) {
 		konafb_error("Failed to enable this display device\n");
+	}
 
 	/* re-draw exist frame buffer to lcd panel*/
 	/* memset(fb->fb.screen_base, 0, framesize); */
@@ -1958,7 +2092,7 @@ int kona_fb_obtain_lock(void)
 {
 	struct kona_fb *fb = g_kona_fb;
 	int ret = 0;
-	/* konafb_info("+\n"); */
+	//konafb_info("+\n");
 
 
 	if (fb == NULL) {
@@ -1976,7 +2110,7 @@ int kona_fb_obtain_lock(void)
 			&fb->prev_buf_done_sem,	msecs_to_jiffies(100));
 	kona_clock_start(fb);
 
-	/* konafb_info("-\n"); */
+	//konafb_info("-\n");
 	return ret;
 }
 
@@ -1984,7 +2118,7 @@ int kona_fb_release_lock(void)
 {
 	struct kona_fb *fb = g_kona_fb;
 	int ret = 0;
-	/* konafb_info("+\n"); */
+	//konafb_info("+\n");
 
 	if (fb == NULL) {
 		konafb_error("WARNING!!! fb is NULL\n");
@@ -2002,7 +2136,7 @@ int kona_fb_release_lock(void)
 	kona_clock_stop(fb);
 	mutex_unlock(&fb->update_sem);
 
-	/* konafb_info("-\n"); */
+	//konafb_info("-\n");
 	return ret;
 }
 

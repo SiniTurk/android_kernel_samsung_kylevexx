@@ -66,6 +66,9 @@ static int RxSensitivity_table_size;
 static bool CTableSize;
 static bool STableSize;
 
+
+#if defined(CONFIG_MACH_HAWAII_SS_CS02)
+
 static int USB_MDIO[6] = {
 	0x0018,			/* MDIO Register 0 initial value 0x0000 */
 	0x0080,			/* MDIO Register 1 initial value 0x0000 */
@@ -73,11 +76,44 @@ static int USB_MDIO[6] = {
 #if defined(CONFIG_MACH_HAWAII_GARNET)
 	0x0400,			/* MDIO Register 3 initial value 0x0400 */
 #else
-	0x2600,			/* MDIO Register 3 initial value 0x0000 */
+	0x2600,			/* MDIO Register 3 initial value 0x2600 */
 #endif
 	0x0130,			/* MDIO Register 4 initial value 0x0000 */
 	0x0000			/* MDIO Register 5 initial value 0x0000 */
 };
+
+#elif defined(CONFIG_MACH_HAWAII_SS_KYLEPRO) || defined(CONFIG_MACH_HAWAII_SS_KYLEPRODS)
+
+static int USB_MDIO[6] = {
+	0x0018,			/* MDIO Register 0 initial value 0x0000 */
+	0x0080,			/* MDIO Register 1 initial value 0x0000 */
+	0x0000,			/* MDIO Register 2 initial value 0x0000 */
+#if defined(CONFIG_MACH_HAWAII_GARNET)
+	0x0400,			/* MDIO Register 3 initial value 0x0400 */
+#else
+	0x2600,			/* MDIO Register 3 initial value 0x2600 */
+#endif
+	0x0130,			/* MDIO Register 4 initial value 0x0000 */
+	0x0000			/* MDIO Register 5 initial value 0x0000 */
+};
+
+#else
+
+static int USB_MDIO[6] = {
+	0x0018,			/* MDIO Register 0 initial value 0x0000 */
+	0x0080,			/* MDIO Register 1 initial value 0x0000 */
+	0x0000,			/* MDIO Register 2 initial value 0x0000 */
+#if defined(CONFIG_MACH_HAWAII_GARNET)
+	0x0400,			/* MDIO Register 3 initial value 0x0400 */
+#else
+	0x2600,			/* MDIO Register 3 initial value 0x2600 */
+#endif
+	0x0130,			/* MDIO Register 4 initial value 0x0000 */
+	0x0000			/* MDIO Register 5 initial value 0x0000 */
+};	
+	
+#endif
+
 
 struct Rx_Sensitivity_t {
 	 int value;

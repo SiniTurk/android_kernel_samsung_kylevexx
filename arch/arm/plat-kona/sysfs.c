@@ -28,6 +28,8 @@
 #include <linux/mfd/bcmpmu.h>
 #include <linux/module.h>
 #include <plat/kona_reset_reason.h>
+#include <mach/io_map.h>
+#include <mach/rdb_A0/brcm_rdb_root_rst_mgr_reg.h>
 
 #ifdef CONFIG_KONA_TIMER_UNIT_TESTS
 #include <mach/kona_timer.h>
@@ -53,13 +55,26 @@ static char *str_reset_reason[] = {
 unsigned int hard_reset_reason;
 EXPORT_SYMBOL(hard_reset_reason);
 
+int is_soft_reset(void)
+{
+	u32 reg;
+	int soft_rst;
+
+	reg = readl(KONA_ROOT_RST_VA + ROOT_RST_MGR_REG_RSTSTS_OFFSET);
+	soft_rst = (reg & ROOT_RST_MGR_REG_RSTSTS_CHIPSFTRST_DET_MASK)
+		>> ROOT_RST_MGR_REG_RSTSTS_CHIPSFTRST_DET_SHIFT;
+
+	return soft_rst;
+}
+EXPORT_SYMBOL(is_soft_reset);
+
 static void set_emu_reset_reason(unsigned int const emu, int val)
 {
 	unsigned int *rst = (unsigned int *)ioremap(emu, 0x4);
 	unsigned short soc0 = 0;
 
 	soc0 = *rst;
-	soc0 &= ~(0xf);
+	soc0 &= ~(RST_REASON_MASK);
 	soc0 |= val;
 	*rst = soc0;
 
@@ -75,7 +90,7 @@ static unsigned int get_emu_reset_reason(unsigned int const emu)
 
 	pr_debug("%s: reset_reason 0x%x\n", __func__, *reset_reason);
 
-	rst = (*reset_reason) & 0xf;
+	rst = (*reset_reason) & RST_REASON_MASK;
 
 	iounmap(reset_reason);
 
@@ -97,7 +112,7 @@ unsigned int is_charging_state(void)
 
 	state = get_emu_reset_reason(SRAM_RST_REASON_BASE);
 
-	state = state & 0xf;
+	state = state & RST_REASON_MASK;
 
 	pr_debug("%s\n reset reason = 0x%x", __func__, state);
 	return (state == CHARGING_STATE) ? 1 : 0;
@@ -138,12 +153,8 @@ EXPORT_SYMBOL(do_set_ap_only_boot);
 
 void do_clear_ap_only_boot(void)
 {
-	unsigned int rst;
-
-	rst = get_emu_reset_reason(SRAM_RST_REASON_BASE);
-	rst = (rst & 0xf) & ~(AP_ONLY_BOOT);
-
-	set_emu_reset_reason(SRAM_RST_REASON_BASE, rst);
+	pr_debug("%s\n", __func__);
+	do_clear_emu_reset_reason();
 }
 EXPORT_SYMBOL(do_clear_ap_only_boot);
 
@@ -167,7 +178,7 @@ unsigned int is_ap_only_boot(void)
 		rst = get_emu_reset_reason(SRAM_RST_REASON_BASE);
 	else
 		rst = AP_ONLY_BOOT;
-	rst = rst & 0xf;
+	rst = rst & RST_REASON_MASK;
 
 	pr_debug("%s\n reset_reason = 0x%x", __func__, rst);
 	return (rst == AP_ONLY_BOOT) ? 1 : 0;
@@ -299,7 +310,7 @@ kona_timer_module_cfg(struct device *dev, struct device_attribute *attr,
 	}
 
 	pr_info("\r\nusage: echo [timer_name(aon-timer/slave-timer)]"
-		"[rate 32000 (32KHz), 1000000 (1MHz), 19500000 (19.5MHz)] > /sys/bcm/timer_module_cfg \r\n");
+		"[rate 32768 (32KHz), 1000000 (1MHz), 19500000 (19.5MHz)] > /sys/bcm/timer_module_cfg \r\n");
 
 	return -EINVAL;
 }

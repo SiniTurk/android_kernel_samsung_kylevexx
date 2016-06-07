@@ -758,7 +758,7 @@ void axipv_release_pixdfifo_ownership(struct axipv_config_t *config)
 
 	axipv_clk_enable(dev);
 	while ((AXIPV_STOPPED != dev->state) && cnt--) {
-		axipv_info("PIXD Fifo busy, wait\n");
+		axipv_err("PIXD Fifo busy, wait\n");
 		udelay(1000);
 	}
 	if (!cnt) {
@@ -876,12 +876,12 @@ int axipv_change_state(u32 event, struct axipv_config_t *config)
 			if (g_curr) {
 				axipv_err("0x%x marked as available\n", g_curr);
 				axipv_set_buff_status(dev->buff, g_curr,
-						AXIPV_BUFF_AVAILABLE);
+					AXIPV_BUFF_AVAILABLE);
 			}
 			if (g_nxt && (g_nxt != g_curr)) {
 				axipv_err("0x%x marked as available\n", g_nxt);
 				axipv_set_buff_status(dev->buff, g_nxt,
-						AXIPV_BUFF_AVAILABLE);
+					AXIPV_BUFF_AVAILABLE);
 			}
 			g_curr = 0;
 			g_nxt = 0;
@@ -953,9 +953,9 @@ int axipv_check_completion(u32 event, struct axipv_config_t *config)
 {
 	/*
 	 * 1. Interrupt is disabled on the core which is supposed to
-	 *	service axipv_isr => Read INT_STATUS and ack
+	 * 	service axipv_isr => Read INT_STATUS and ack
 	 * 2. Workqueue doesn't run. process_release and if
-	 *	dev->irq_stat is valid, then process_irq
+	 * 	dev->irq_stat is valid, then process_irq
 	 * 3. Unknown case -> Halt AXIPV immediately
 	 */
 	u32 ret = -1, axipv_base;
@@ -995,8 +995,8 @@ int axipv_check_completion(u32 event, struct axipv_config_t *config)
 			ret = 0;
 		} else if (dev->irq_stat & PV_START_THRESH_INT) {
 			axipv_err("WQ was pending 0x%x\n", dev->irq_stat);
-			dev->irq_stat &= (~PV_START_THRESH_INT);
-			ret = 0;
+				dev->irq_stat &= (~PV_START_THRESH_INT);
+				ret = 0;
 		} else {
 			axipv_err("%d wasn't triggered\n", PV_START_THRESH_INT);
 			ret = -1;
@@ -1020,7 +1020,7 @@ int axipv_check_completion(u32 event, struct axipv_config_t *config)
 			u32 curr_buff = readl(axipv_base + REG_CUR_FRAME);
 			axipv_err("marking 0x%x as available\n", curr_buff);
 			axipv_set_buff_status(dev->buff, curr_buff,
-						AXIPV_BUFF_AVAILABLE);
+				AXIPV_BUFF_AVAILABLE);
 			if (curr_buff == g_curr)
 				g_curr = 0;
 			if (curr_buff == g_nxt)

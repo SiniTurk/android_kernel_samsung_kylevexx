@@ -58,6 +58,20 @@ extern int pi_debug;
 	} while(0)
 #endif
 
+#define PI_STATE(state_id, policy, latency, flg) \
+		{.id = state_id, .state_policy = policy,\
+		.hw_wakeup_latency = latency, .flags = flg}
+
+#define INIT_OPP_INFO(f, opp, prms) {\
+	.freq_id = f,\
+	.opp_id = opp,\
+	.ctrl_prms = prms,\
+}
+
+#define RUN_POLICY PM_POLICY_5
+#define RETN_POLICY PM_POLICY_1
+#define SHTDWN_POLICY PM_POLICY_0
+
 struct clk;
 struct pi_ops;
 struct pi_mgr_qos_node;
@@ -273,6 +287,7 @@ int pi_mgr_unregister_notifier(u32 pi_id, struct notifier_block *notifier,
 int pi_state_allowed(int pi_id);
 int pi_mgr_register(struct pi *pi);
 int pi_mgr_init(void);
+int pi_mgr_initialized(void);
 u32 pi_get_active_qos(int pi_id);
 u32 pi_get_active_opp(int pi_id);
 u32 pi_get_dfs_lmt(u32 pi_id, bool max);

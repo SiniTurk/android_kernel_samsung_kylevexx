@@ -25,11 +25,17 @@ config ARCH_HAWAII
     select ARM_ERRATA_754322
     select ARM_ERRATA_764369 if SMP
 	select ARM_ERRATA_782773
-    select KONA_WFI_WORKAROUND if SMP
 	select MIGHT_HAVE_CACHE_L2X0
 	help
 	  Support for the Broadcom Hawaii Soc platform.
 
+config ARCH_JAVA
+	bool "Broadcom Java Soc"
+	select HAVE_SMP
+	select HAVE_PWM
+	select MIGHT_HAVE_CACHE_L2X0
+	help
+	  Support for the Broadcom Java Soc platform.
 endchoice
 
 source "arch/arm/plat-kona/Kconfig.common"
@@ -42,8 +48,18 @@ config GP_TIMER_CLOCK_OFF_FIX
 
 config GP_TIMER_COMPARATOR_LOAD_DELAY
         bool "Enable the delay after loading general purpose timer compare register"
-        depends on ARCH_RHEA || ARCH_ISLAND || ARCH_HAWAII
+        depends on ARCH_RHEA || ARCH_ISLAND || ARCH_HAWAII || ARCH_JAVA
         default y
+
+config 1MHZ_SLV_SYSTEM_TIMER
+	bool "Use 1MHz slave timer as per CPU local timer"
+	depends on ARCH_HAWAII && LOCAL_TIMERS
+	default y
+	help
+	  Say Y if you want to use the 1 MHz slave timer as the per CPU local timer
+	  The 1 MHz slave timer will produce a better performance compared to the
+	  32 KHz AON timer
+	  The 1 MHz slave timer helps to reduce timer scheduling overhead
 
 config KONA_DCACHE_INVALIDATION
 	bool "Have Linux invalidate D-Cache"
@@ -71,7 +87,7 @@ config BCM_STM
 
 config DMAC_PL330
 	bool "PL330 DMAC driver support for Kona architecture"
-	depends on ARCH_RHEA || ARCH_HAWAII
+	depends on ARCH_RHEA || ARCH_HAWAII || ARCH_JAVA
 	select PL330
 	select ARM_PL330_FIX_ERRATA_716336
 	help
@@ -220,7 +236,7 @@ config KONA_PWRMGR_REV2
 
 config KONA_PMU_BSC_USE_PMGR_HW_SEM
 	bool "use HW sem to sync i2c between sw & sequencer"
-	depends on (ARCH_RHEA || ARCH_HAWAII) && KONA_POWER_MGR
+	depends on (ARCH_RHEA || ARCH_HAWAII || ARCH_JAVA) && KONA_POWER_MGR
 	default y
 	help
 	  The HW sequencer can generate i2c transcations on the PMU i2c
@@ -229,7 +245,7 @@ config KONA_PMU_BSC_USE_PMGR_HW_SEM
 
 config KONA_I2C_SEQUENCER_LOG
 	bool "enable pwrmgr i2c sequencer logging"
-	depends on ARCH_HAWAII && KONA_POWER_MGR
+	depends on (ARCH_HAWAII || ARCH_JAVA) && KONA_POWER_MGR
 	default n
 	help
 	 Say Y to enable sequencer logging. All the pwrmgr i2c
@@ -246,12 +262,30 @@ config PM_LOG_TO_UNCACHED_MEM
         retrieve information from RAM-dumps in case of errors or failures.
 
 config KONA_MEMC
-       bool "Enable Kona MEMC driver"
-       help
-         Say Y to enable MEMC driver fot BROADCOM
+	bool "Enable Kona MEMC driver"
+	help
+	 Say Y to enable MEMC driver fot BROADCOM
 	 mobile platform.
 	 MEMC config params (self refresh, DDRLDO state etc)
 	 can be set through driver platform data.
+
+config BRCM_CDC
+	bool "Enable Broadcom CDC driver"
+	help
+	 Say Y to enable Broadcom CDC driver
+	 Cluster Dormant Controller handles state
+	 CPU state machine for CPU dormant and need
+	 to be enabled to enable dormant support
+
+config KONA_SECURE_MEMC
+       bool "Enable Kona secure MEMC driver"
+       help
+         Say Y to enable secure MEMC driver for BRCM
+         mobile platform. this drivers enable user to have
+	 static configuration and dynamic confoguration
+	 on the fly as well.
+	 it addresses htc requirement of static configuration.
+	 and, user could configure memc on the fly for debugging.
 
 config KONA_ATAG_DT
        bool "Enable ATAG-based DT support"
@@ -275,14 +309,6 @@ config PROC_PINMUX_DUMP
        help
          Say Y if you want to enable pin-mix dump
 
-config KONA_WFI_WORKAROUND
-       bool "Prevent both cores from doing cpu_do_idle calls when VCHIQ bulk transfers pending"
-       depends on SMP
-       help
-	 If both cores do a WFI call at the same time, then the DDR3 seems to go into some
-	 type of low power mode which causes videocore accesses to the DDR3 to slow down
-	 dramatically. This enables a workaround which prevents this from happening.
-
 config KONA_DT_BCMPMU
 	bool "Support DT for bcmpmu drivers"
 	depends on KONA_ATAG_DT
@@ -296,12 +322,6 @@ config KONA_PROFILER
 	default 0
 	help
 	  Say Y if you want to enable Kona profiling
-
-config KONA_CLK_TRACE
-	bool "Enable clk usage tracing to non-cached buffer"
-	default y
-	help
-	  Say Y if you want to enable clk usage counter tracing
 
 config KONA_USB_CONTROL
        bool "Support BCM USB wrapper framework"
@@ -328,7 +348,7 @@ config KONA_KEYPAD
 	tristate
 config BRCM_UART_CHANGES
 	bool "Enable the Uart 8250.c changes"
-	depends on ARCH_RHEA || ARCH_HAWAII
+	depends on ARCH_RHEA || ARCH_HAWAII || ARCH_JAVA
 	default y
 	help
 	  Say Y if you want to enable BRCM UART changes in 8250.c file
@@ -361,12 +381,6 @@ config KONA_AXITRACE
         depends on ARM_AMBA
         help
           Say Y here to enable axitrace sources on hawaii.
-
-config SPLIT_VIDEO_CMD_MODE_INTERFACE
-	bool "Enable split video command mode interface"
-	default n
-	help
-	  Say Y here to enable seperate interface file for video and command mode lcd
 
 
 config FB_BRCM_LCD_EXIST_CHECK

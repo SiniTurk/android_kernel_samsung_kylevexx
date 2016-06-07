@@ -39,8 +39,10 @@
 #include <mach/memory.h>
 #include <plat/kona_pm.h>
 #include <mach/io_map.h>
+#if defined (CONFIG_ARCH_HAWAII)
 #include <mach/rdb/brcm_rdb_a9cpu.h>
 #include <mach/rdb/brcm_rdb_gicdist.h>
+#endif
 
 #ifndef PWRMGR_I2C_VAR_DATA_REG
 #define PWRMGR_I2C_VAR_DATA_REG 6
@@ -231,7 +233,9 @@ static struct pwr_mgr pwr_mgr;
 
 static void pwr_mgr_dump_i2c_cmd_regs(void);
 
-static void dump_jig_registers(void)
+#ifdef CONFIG_ARCH_HAWAII
+
+static void dump_gic_registers(void)
 {
 #ifdef CONFIG_KONA_I2C_SEQUENCER_LOG
 	pr_info("pwr_mgr intr mask: %x intr status: %x\n",
@@ -267,6 +271,12 @@ static void dump_jig_registers(void)
 			readl(KONA_GICDIST_VA + GICDIST_PENDING_SET7_OFFSET));
 #endif
 }
+#else
+static void dump_gic_registers(void)
+{
+
+}
+#endif
 
 int pwr_mgr_event_trg_enable(int event_id, int event_trg_type)
 {
@@ -395,12 +405,26 @@ bool pwr_mgr_is_event_active(int event_id)
 		pwr_dbg(PWR_LOG_ERR, "%s:invalid event id\n", __func__);
 		return false;
 	}
+	if (unlikely(pwr_mgr.info->event_policy_offset[event_id]
+			== INVALID_EVENT_OFFSET)) {
+		pwr_dbg(PWR_LOG_CONFIG, "%s:invalid id\n", __func__);
+		return false;
+	}
 	reg_val = readl(PWR_MGR_REG_ADDR(event_id * 4));
 	return !!(reg_val & PWRMGR_EVENT_CONDITION_ACTIVE_MASK);
 
 }
 
 EXPORT_SYMBOL(pwr_mgr_is_event_active);
+
+
+void pwr_mgr_log_active_events(void)
+{
+	int i = 0;
+	for (i = 0; i < PWR_MGR_NUM_EVENTS; i++)
+		if (pwr_mgr_is_event_active(i))
+			pr_info("%s: Event %d is active\n", __func__, i);
+}
 
 int pwr_mgr_event_set(int event_id, int event_state)
 {
@@ -955,7 +979,9 @@ int pwr_mgr_pm_i2c_sem_lock()
 						cpu_freq);
 		}
 #endif
+#if defined(CONFIG_KONA_CPU_PM_HANDLER)
 		kona_pm_disable_idle_state(CSTATE_ALL, 1);
+#endif
 	}
 	spin_lock_irqsave(&pwr_mgr_lock, flgs);
 
@@ -998,7 +1024,9 @@ int pwr_mgr_pm_i2c_sem_unlock()
 		if (cpu_freq != 0)
 			cpufreq_update_lmt_req(&frq_min_lmt_node, cpu_freq);
 #endif
+#if defined(CONFIG_KONA_CPU_PM_HANDLER)
 		kona_pm_disable_idle_state(CSTATE_ALL, 0);
+#endif
 	}
 	return 0;
 }
@@ -2026,11 +2054,13 @@ static int pwr_mgr_sw_i2c_seq_start(u32 action)
 
 				pwr_dbg(PWR_LOG_ERR, "%s seq timedout !!\n",
 						__func__);
+#if defined (CONFIG_ARCH_HAWAII)
 				pr_info("PCSR_CPU0: %x PCSR_CPU1: %x\n",
 						readl(KONA_A9CPU0_VA +
 							A9CPU_PCSR_OFFSET),
 						readl(KONA_A9CPU1_VA +
 							A9CPU_PCSR_OFFSET));
+#endif
 				continue;
 			} else {
 				if (action != I2C_SEQ_READ_FIFO) {
@@ -2102,7 +2132,7 @@ exit:
 #endif
 	if (i == retry) {
 		pwr_dbg(PWR_LOG_ERR, "%s: max tries\n", __func__);
-		dump_jig_registers();
+		dump_gic_registers();
 		pwr_mgr_seq_log_buf_dump();
 		ret = -EAGAIN;
 	}
@@ -2216,7 +2246,9 @@ int pwr_mgr_pmu_reg_read(u8 reg_addr, u8 slave_id, u8 *reg_val)
 	if (!reg_val)
 		return -EINVAL;
 	mutex_lock(&seq_mutex);
+#if defined(CONFIG_KONA_CPU_PM_HANDLER)
 	kona_pm_disable_idle_state(CSTATE_ALL, 1);
+#endif
 	pwr_mgr_seq_log_buf_put(SEQ_LOG_READ_BYTE,
 			SEQ_LOG_PACK_U24(0 , slave_id, reg_addr));
 	if (pwr_mgr.info->i2c_rd_slv_id_off1 >= 0)
@@ -2278,7 +2310,9 @@ int pwr_mgr_pmu_reg_read(u8 reg_addr, u8 slave_id, u8 *reg_val)
 out_unlock:
 	pwr_mgr_seq_log_buf_put(SEQ_LOG_READ_BYTE,
 			SEQ_LOG_PACK_U24(slave_id, reg_addr, *reg_val));
+#if defined(CONFIG_KONA_CPU_PM_HANDLER)
 	kona_pm_disable_idle_state(CSTATE_ALL, 0);
+#endif
 	mutex_unlock(&seq_mutex);
 	pwr_dbg(PWR_LOG_SEQ, "%s : ret = %d\n", __func__, ret);
 	return ret;
@@ -2300,7 +2334,9 @@ int pwr_mgr_pmu_reg_write(u8 reg_addr, u8 slave_id, u8 reg_val)
 	}
 
 	mutex_lock(&seq_mutex);
+#if defined(CONFIG_KONA_CPU_PM_HANDLER)
 	kona_pm_disable_idle_state(CSTATE_ALL, 1);
+#endif
 
 	pwr_mgr_seq_log_buf_put(SEQ_LOG_WRITE_BYTE,
 			SEQ_LOG_PACK_U24(slave_id, reg_addr, reg_val));
@@ -2338,7 +2374,9 @@ int pwr_mgr_pmu_reg_write(u8 reg_addr, u8 slave_id, u8 reg_val)
 	}
 	pwr_mgr_seq_log_buf_put(SEQ_LOG_WRITE_BYTE,
 			SEQ_LOG_PACK_U24(slave_id, reg_addr, reg_val));
+#if defined(CONFIG_KONA_CPU_PM_HANDLER)
 	kona_pm_disable_idle_state(CSTATE_ALL, 0);
+#endif
 	mutex_unlock(&seq_mutex);
 	pwr_dbg(PWR_LOG_SEQ,
 		"%s reg_addr:0x%0x; slave_id:%d; reg_val:0x%0x; ret_val:%d\n",
@@ -2347,6 +2385,160 @@ int pwr_mgr_pmu_reg_write(u8 reg_addr, u8 slave_id, u8 reg_val)
 	return ret;
 }
 EXPORT_SYMBOL(pwr_mgr_pmu_reg_write);
+
+/* read_direct will ignore any ongoing i2c transaction and restart
+ * new transaction, result of last ongoing transaction will be unknown
+ * should be called with Preemption disabled and where ongoing transaction
+ * can be ignored, such as poweroff func*/
+int pwr_mgr_pmu_reg_read_direct(u8 reg_addr, u8 slave_id, u8 *reg_val)
+{
+	int ret;
+	u32 reg;
+	int last_mode;
+#if defined(CONFIG_KONA_PWRMGR_REV2)
+	u32 bsc_isr;
+#endif
+	pwr_dbg(PWR_LOG_SEQ, "%s\n", __func__);
+	if (unlikely(!pwr_mgr.info)) {
+		pwr_dbg(PWR_LOG_ERR, "%s:ERROR - pwr mgr not initialized\n",
+			__func__);
+		return -EPERM;
+	}
+	if (!reg_val)
+		return -EINVAL;
+	last_mode = pwr_mgr.i2c_mode;
+	pwr_mgr.i2c_mode = PWR_MGR_I2C_MODE_POLL;
+	pwr_mgr_seq_log_buf_put(SEQ_LOG_READ_BYTE,
+			SEQ_LOG_PACK_U24(0 , slave_id, reg_addr));
+	if (pwr_mgr.info->i2c_rd_slv_id_off1 >= 0)
+		pwr_mgr_update_i2c_cmd_data((u32) pwr_mgr.info->
+					    i2c_rd_slv_id_off1,
+					    I2C_WRITE_ADDR(slave_id));
+	if (pwr_mgr.info->i2c_rd_reg_addr_off >= 0)
+		pwr_mgr_update_i2c_cmd_data((u32) pwr_mgr.info->
+					    i2c_rd_reg_addr_off, reg_addr);
+	if (pwr_mgr.info->i2c_rd_slv_id_off2 >= 0)
+		pwr_mgr_update_i2c_cmd_data((u32) pwr_mgr.info->
+					    i2c_rd_slv_id_off2,
+					    I2C_READ_ADDR(slave_id));
+	ret = pwr_mgr_sw_i2c_seq_start(I2C_SEQ_READ);
+	if (!ret) {
+		reg = readl(PWR_MGR_REG_ADDR(PWRMGR_I2C_SW_CMD_CTRL_OFFSET));
+#if !defined(CONFIG_KONA_PWRMGR_REV2)
+		reg = ((reg & PWRMGR_I2C_READ_DATA_MASK) >>
+				PWRMGR_I2C_READ_DATA_SHIFT);
+		if (reg & 0x1) {
+			pwr_dbg(PWR_LOG_SEQ, "PWRMGR: I2C READ NACK\n");
+			ret = -EAGAIN;
+			goto out;
+		}
+		/**
+		 * if there is no NACK from PMU, we will trigger
+		 * PWRMGR again to read the FIFO data from PMU_BSC
+		 * to PWRMGR buffer
+		 */
+		ret = pwr_mgr_sw_i2c_seq_start(I2C_SEQ_READ_FIFO);
+		if (ret < 0)
+			goto out;
+		reg = readl(PWR_MGR_REG_ADDR(PWRMGR_I2C_SW_CMD_CTRL_OFFSET));
+#else
+		/**
+		 * In KONA REV2 (hawaii), we don't need to trigger the sequencer
+		 * two times, there is another register(POWER_MANAGER_APB_READ)
+		 * is added apart from
+		 * POWER_MANAGER_I2C_SOFTWARE_COMMAND_CONTROL:I2C_READ_DATA.
+		 * So in the single trigger we can read i2c data and i2c isr
+		 * register both.
+		 */
+		bsc_isr = readl(PWR_MGR_REG_ADDR(PWRMGR_I2C_APB_READ_OFFSET)) &
+			PWRMGR_I2C_APB_READ_DATA_MASK;
+		if (bsc_isr & 0x1) {
+			pwr_mgr_seq_log_buf_put(SEQ_LOG_NACK, 0);
+			pwr_dbg(PWR_LOG_SEQ, "PWRMGR: I2C READ NACK\n");
+			ret = -EAGAIN;
+			goto out;
+		}
+#endif
+		*reg_val = (reg & PWRMGR_I2C_READ_DATA_MASK) >>
+		    PWRMGR_I2C_READ_DATA_SHIFT;
+
+		pwr_dbg(PWR_LOG_SEQ,
+		"%s reg_addr:0x%0x; slave_id:%d; reg_val:0x%0x; ret_val:%d\n",
+		__func__, reg_addr, slave_id, *reg_val, ret);
+	}
+out:
+	pwr_mgr.i2c_mode = last_mode;
+	pwr_mgr_seq_log_buf_put(SEQ_LOG_READ_BYTE,
+			SEQ_LOG_PACK_U24(slave_id, reg_addr, *reg_val));
+	pwr_dbg(PWR_LOG_SEQ, "%s : ret = %d\n", __func__, ret);
+	return ret;
+}
+EXPORT_SYMBOL(pwr_mgr_pmu_reg_read_direct);
+
+/* write_direct will ignore any ongoing i2c transaction and restart
+ * new transaction, result of last ongoing transaction will be unknown
+ * should be called with Preemption disabled and where ongoing transaction
+ * can be ignored, such as poweroff func*/
+int pwr_mgr_pmu_reg_write_direct(u8 reg_addr, u8 slave_id, u8 reg_val)
+{
+	int ret = 0;
+	u32 reg;
+	u8 i2c_data;
+	int last_mode;
+
+	pwr_dbg(PWR_LOG_SEQ, "%s\n", __func__);
+	if (unlikely(!pwr_mgr.info)) {
+		pwr_dbg(PWR_LOG_ERR, "%s:ERROR - pwr mgr not initialized\n",
+			__func__);
+		return -EPERM;
+	}
+
+	last_mode = pwr_mgr.i2c_mode;
+	pwr_mgr.i2c_mode = PWR_MGR_I2C_MODE_POLL;
+	pwr_mgr_seq_log_buf_put(SEQ_LOG_WRITE_BYTE,
+			SEQ_LOG_PACK_U24(slave_id, reg_addr, reg_val));
+
+	if (pwr_mgr.info->i2c_wr_slv_id_off >= 0)
+		pwr_mgr_update_i2c_cmd_data((u32) pwr_mgr.info->
+					    i2c_wr_slv_id_off,
+					    I2C_WRITE_ADDR(slave_id));
+	if (pwr_mgr.info->i2c_wr_reg_addr_off >= 0)
+		pwr_mgr_update_i2c_cmd_data((u32) pwr_mgr.info->
+					    i2c_wr_reg_addr_off, reg_addr);
+	if (pwr_mgr.info->i2c_wr_val_addr_off >= 0)
+		pwr_mgr_update_i2c_cmd_data((u32) pwr_mgr.info->
+					    i2c_wr_val_addr_off, reg_val);
+
+	ret = pwr_mgr_sw_i2c_seq_start(I2C_SEQ_WRITE);
+
+	/**
+	 * This code check for the NACK from the PMU
+	 */
+	if (ret == 0) {
+#if !defined(CONFIG_KONA_PWRMGR_REV2)
+		reg = readl(PWR_MGR_REG_ADDR(PWRMGR_I2C_SW_CMD_CTRL_OFFSET));
+		i2c_data = reg & PWRMGR_I2C_READ_DATA_MASK;
+#else
+		reg = readl(PWR_MGR_REG_ADDR(PWRMGR_I2C_APB_READ_OFFSET));
+		i2c_data = reg & PWRMGR_I2C_APB_READ_DATA_MASK;
+#endif
+		if (i2c_data & 0x1) {
+			pwr_mgr_seq_log_buf_put(SEQ_LOG_NACK, 0);
+			pwr_dbg(PWR_LOG_SEQ,
+				"PWRMGR: I2C WRITE NACK from PMU\n");
+			ret = -EAGAIN;
+		}
+	}
+	pwr_mgr.i2c_mode = last_mode;
+	pwr_mgr_seq_log_buf_put(SEQ_LOG_WRITE_BYTE,
+			SEQ_LOG_PACK_U24(slave_id, reg_addr, reg_val));
+	pwr_dbg(PWR_LOG_SEQ,
+		"%s reg_addr:0x%0x; slave_id:%d; reg_val:0x%0x; ret_val:%d\n",
+		__func__, reg_addr, slave_id, reg_val, ret);
+
+	return ret;
+}
+EXPORT_SYMBOL(pwr_mgr_pmu_reg_write_direct);
 
 int pwr_mgr_pmu_reg_read_mul(u8 reg_addr_start, u8 slave_id, u8 count,
 			     u8 *reg_val)
@@ -2534,24 +2726,28 @@ void pwr_mgr_init_sequencer(struct pwr_mgr_info *info)
 
 #ifdef CONFIG_KONA_PWRMGR_SWSEQ_RETRY_WORKAROUND
 	int ret = 0;
-	if (!pwr_mgr.seq_qos_client.valid) {
-		ret = pi_mgr_qos_add_request(&pwr_mgr.seq_qos_client,
-				"sequencer",
-				PI_MGR_PI_ID_MM,
-				PI_MGR_QOS_DEFAULT_VALUE);
-		if (ret)
-			pwr_dbg(PWR_LOG_SEQ, "%s: qos_add_request failed\n",
-					__func__);
-	}
+	if (pi_mgr_initialized()) {
+		if (!pwr_mgr.seq_qos_client.valid) {
+			ret = pi_mgr_qos_add_request(&pwr_mgr.seq_qos_client,
+					"sequencer",
+					PI_MGR_PI_ID_MM,
+					PI_MGR_QOS_DEFAULT_VALUE);
+			if (ret)
+				pwr_dbg(PWR_LOG_SEQ,
+						"%s: qos_add_request failed\n",
+						__func__);
+		}
 
-	if (!pwr_mgr.seq_dfs_client.valid) {
-		ret = pi_mgr_dfs_add_request(&pwr_mgr.seq_dfs_client,
-				"sequencer",
-				PI_MGR_PI_ID_MM,
-				PI_MGR_DFS_MIN_VALUE);
-		if (ret)
-			pwr_dbg(PWR_LOG_SEQ, "%s: dfs_add_request failed\n",
-					__func__);
+		if (!pwr_mgr.seq_dfs_client.valid) {
+			ret = pi_mgr_dfs_add_request(&pwr_mgr.seq_dfs_client,
+					"sequencer",
+					PI_MGR_PI_ID_MM,
+					PI_MGR_DFS_MIN_VALUE);
+			if (ret)
+				pwr_dbg(PWR_LOG_SEQ,
+						"%s: dfs_add_request failed\n",
+						__func__);
+		}
 	}
 #endif
 

@@ -24,6 +24,10 @@
 #include <linux/debugfs.h>
 #endif
 
+#ifndef MAX_CCU_COUNT
+#define MAX_CCU_COUNT	6
+#endif
+
 #define GET_BIT_USING_MASK(reg_val, mask)	(!!((reg_val) & (mask)))
 #define SET_BIT_USING_MASK(reg_val, mask)	((reg_val) | (mask))
 #define RESET_BIT_USING_MASK(reg_val, mask)	((reg_val) & ~(mask))
@@ -38,10 +42,11 @@
 #define GET_BITS_FROM_REGBITS(reg_bits,reg_val)	 (((reg_val) &  \
 		(reg_bits).reg_bit_mask) >> (reg_bits).reg_bit_pos)
 
-#define GET_PERI_SRC_CLK(clock)		((clock)->src_clk.clk[(clock)->src_clk.src_inx])
-#define PERI_SRC_CLK_INX(clock)		((clock)->src_clk.src_inx)
-#define PERI_SRC_CLK_COUNT(clock)	((clock)->src_clk.count)
-#define PERI_SRC_CLK_VALID(clock)	((clock)->src_clk.count)
+#define GET_PERI_SRC_CLK(clock) (\
+		(clock)->src.list[(clock)->src.src_inx].clk)
+#define PERI_SRC_CLK_INX(clock)		((clock)->src.src_inx)
+#define PERI_SRC_CLK_COUNT(clock)	((clock)->src.count)
+#define PERI_SRC_CLK_VALID(clock)	((clock)->src.count)
 
 #define	CLOCK_1K		1000
 #define	CLOCK_1M		(CLOCK_1K * 1000)
@@ -116,7 +121,7 @@
 #define CCU_DBG_BUS_SEL_MASK		(0x1F << 16)
 #define CCU_DBG_BUS_SEL_SHIFT		16
 
-#define POLICY_RESUME_INS_COUNT	20000
+#define POLICY_RESUME_INS_COUNT	60000
 #define CLK_EN_INS_COUNT	1000
 
 #define CCU_POLICY_MASK_ENABLE_ALL_MASK	0x7FFFFFFF
@@ -430,10 +435,15 @@ struct ccu_state_save {
  * @clk: array of source clocks
  */
 
+struct clock_source {
+	struct clk *clk;
+	u32 val;
+};
+
 struct src_clk {
 	u8 count;
 	u8 src_inx;
-	struct clk **clk;
+	struct clock_source *list;
 };
 
 #ifdef CONFIG_KONA_PI_MGR
@@ -515,14 +525,15 @@ struct ccu_clk {
 	struct ccu_clk_ops *ccu_ops;
 	u8 active_policy;
 	u32 *freq_tbl[MAX_CCU_FREQ_COUNT];
+	int freq_tbl_size;
 	struct ccu_state_save *ccu_state_save;
 	spinlock_t clk_lock;
 	spinlock_t access_lock;
-#ifdef CONFIG_DEBUG_FS
-	struct dentry *dent_ccu_dir;
 	u32 policy_dbg_offset;
 	u32 policy_dbg_act_freq_shift;
 	u32 policy_dbg_act_policy_shift;
+	#ifdef CONFIG_DEBUG_FS
+	struct dentry *dent_ccu_dir;
 	u32 clk_mon_offset;
 #endif
 
@@ -545,7 +556,7 @@ struct peri_clk {
 	struct peri_clk_ops *peri_ops;
 
 	struct clk_div clk_div;
-	struct src_clk src_clk;
+	struct src_clk src;
 	/*Reset offset and bit fields */
 	u32 soft_reset_offset;
 	u32 clk_reset_mask;
@@ -789,15 +800,48 @@ int ccu_get_dbg_bus_status(struct ccu_clk *ccu_clk);
 int ccu_set_dbg_bus_sel(struct ccu_clk *ccu_clk, u32 sel);
 int ccu_get_dbg_bus_sel(struct ccu_clk *ccu_clk);
 int ccu_print_sleep_prevent_clks(struct clk *clk);
+int ccu_volt_id_update_for_freqid(struct clk *clk, u8 freq_id, u8 volt_id);
+int ccu_volt_tbl_display(struct clk *clk, u8 *volt_tbl);
+int ccu_clk_get_freq_id_from_opp(struct ccu_clk *ccu_clk, int opp_id);
+u32 ccu_clk_get_rate(struct clk *clk, int opp_id);
 int clk_trace_init(int size);
 
 int pll_set_desense_offset(struct clk *clk, int offset);
 int pll_get_desense_offset(struct clk *clk);
 int pll_desense_enable(struct clk *clk, int enable);
 
-int pll_set_desense_offset(struct clk *clk, int offset);
-int pll_get_desense_offset(struct clk *clk);
-int pll_desense_enable(struct clk *clk, int enable);
+int ccu_policy_dbg_get_act_policy(struct ccu_clk *ccu_clk);
+int ccu_policy_dbg_get_act_freqid(struct ccu_clk *ccu_clk);
+int ref_clk_get_gating_status(struct ref_clk *ref_clk);
+
+int pll_clk_get_lock_status(struct pll_clk *pll_clk);
+int pll_clk_get_pdiv(struct pll_clk *pll_clk);
+int pll_clk_get_ndiv_int(struct pll_clk *pll_clk);
+int pll_clk_get_ndiv_frac(struct pll_clk *pll_clk);
+int pll_clk_get_idle_pwrdwn_sw_ovrride(struct pll_clk *pll_clk);
+int pll_clk_get_pwrdwn(struct pll_clk *pll_clk);
+
+
+int pll_chnl_clk_get_enb_clkout(struct pll_chnl_clk *pll_chnl_clk);
+int pll_chnl_clk_get_mdiv(struct pll_chnl_clk *pll_chnl_clk);
+
+int ref_clk_get_gating_ctrl(struct ref_clk *ref_clk);
+int ref_clk_get_enable_bit(struct ref_clk *ref_clk);
+
+int core_clk_get_gating_ctrl(struct core_clk *core_clk);
+int core_clk_get_gating_status(struct core_clk *core_clk);
+int core_clk_get_enable_bit(struct core_clk *core_clk);
+
+int peri_clk_get_gating_ctrl(struct peri_clk *peri_clk);
+int peri_clk_get_enable_bit(struct peri_clk *peri_clk);
+int peri_clk_get_gating_status(struct peri_clk *peri_clk);
+
+int bus_clk_get_enable_bit(struct bus_clk *bus_clk);
+int bus_clk_get_gating_ctrl(struct bus_clk *bus_clk);
+int bus_clk_get_gating_status(struct bus_clk *bus_clk);
+
+
+
 
 /*These clock API should only be called after
 * appropriate locks are acquired*/

@@ -11,11 +11,15 @@
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/smp.h>
+#include <linux/cpu.h>
+#include <asm/cpu.h>
+#include <asm/cputype.h>
+#include <linux/sched.h>
 #include <linux/completion.h>
 #include <asm/cp15.h>
 #include <asm/cacheflush.h>
 #include <plat/kona_pm.h>
-#ifdef CONFIG_A9_DORMANT_MODE
+#if defined(CONFIG_A9_DORMANT_MODE) || defined(CONFIG_DORMANT_MODE)
 #include <mach/dormant.h>
 #endif
 
@@ -60,22 +64,34 @@ static inline void cpu_leave_lowpower(void)
 
 static inline void platform_do_lowpower(unsigned int cpu)
 {
+	struct cpuinfo_arm *ci;
+	struct task_struct *idle;
+
 	/*
 	 * there is no power-control hardware on this platform, so all
 	 * we can do is put the core into WFI; this is safe as the calling
 	 * code will have already disabled interrupts
 	 */
+	local_irq_disable();
 	for (;;) {
 		/*
 		 * here's the WFI
 		 */
-#ifdef CONFIG_A9_DORMANT_MODE
-		kona_pm_cpu_lowpower();
+#if defined(CONFIG_A9_DORMANT_MODE)
+				kona_pm_cpu_lowpower();
+#elif defined(CONFIG_DORMANT_MODE)
+				if (is_dormant_enabled())
+					kona_pm_cpu_lowpower();
+				else
+					asm(".word	0xe320f003\n"
+						:
+						:
+						: "memory", "cc");
 #else
-		asm(".word	0xe320f003\n"
-		    :
-		    :
-		    : "memory", "cc");
+				asm(".word	0xe320f003\n"
+					:
+					:
+					: "memory", "cc");
 #endif
 		if (pen_release == cpu) {
 			/*
@@ -94,6 +110,30 @@ static inline void platform_do_lowpower(unsigned int cpu)
 		 */
 		pr_debug("CPU%u: spurious wakeup call\n", cpu);
 	}
+	ci = &per_cpu(cpu_data, cpu);
+	idle = ci->idle;
+
+	BUG_ON(!idle);
+	/*
+	For Hawaii and Java, all cores are reset on exit from full dormant.
+	An offlined core may exit dormant while in offlined
+	state due to full dormant reset (dormant driver push the core back
+	to dormant in this case). When an offlined core is brought back to
+	online state, init_idle() function invoked by the core that's
+	powering up the offlined core will set preempt_count of offlined core's
+	idle task to zero. init_idle() is not using any access protection while
+	updating preempt_count.
+
+	preempt_count may get corrupted if the offlined core is active due to
+	full dormant rest and is also updating  preempt_count through spin_lock
+	or other kernel API calls
+
+	Workaround is to force preempt_count to zero before offlined core exits
+	to online state.
+	*/
+	task_thread_info(idle)->preempt_count = 0;
+
+	local_irq_enable();
 }
 
 int platform_cpu_kill(unsigned int cpu)
@@ -120,7 +160,7 @@ void platform_cpu_die(unsigned int cpu)
 
 	pr_notice("CPU%u: shutdown\n", cpu);
 
-#ifdef CONFIG_A9_DORMANT_MODE
+#if defined(CONFIG_A9_DORMANT_MODE) || defined(CONFIG_DORMANT_MODE)
 	if (is_dormant_enabled())
 		platform_do_lowpower(cpu);
 	else {
@@ -136,7 +176,7 @@ void platform_cpu_die(unsigned int cpu)
 	 * coherency, and then restore interrupts
 	 */
 	cpu_leave_lowpower();
-#ifdef CONFIG_A9_DORMANT_MODE
+#if defined(CONFIG_A9_DORMANT_MODE) || defined(CONFIG_DORMANT_MODE)
 	}
 #endif
 }

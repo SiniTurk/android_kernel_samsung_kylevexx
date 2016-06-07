@@ -247,7 +247,7 @@
 #define BCM_INT_ID_RESERVED173          (173 + BCM_INT_ID_PPI_MAX)
 #define BCM_INT_ID_RESERVED174          (174 + BCM_INT_ID_PPI_MAX)
 #define BCM_INT_ID_RESERVED175          (175 + BCM_INT_ID_PPI_MAX)
-#ifdef CONFIG_ARCH_HAWAII
+#if defined (CONFIG_ARCH_HAWAII) || defined (CONFIG_ARCH_JAVA)
 #define BCM_INT_ID_H264_AOB             (176 + BCM_INT_ID_PPI_MAX)
 #define BCM_INT_ID_H264_CME             (177 + BCM_INT_ID_PPI_MAX)
 #define BCM_INT_ID_H264_MCIN_CBC        (178 + BCM_INT_ID_PPI_MAX)
@@ -280,6 +280,10 @@
 #define BCM_INT_ID_ESUB_DMAC_6          (198 + BCM_INT_ID_PPI_MAX)
 #define BCM_INT_ID_ESUB_DMAC_7          (199 + BCM_INT_ID_PPI_MAX)
 #define BCM_INT_ID_MAX                  (200 + BCM_INT_ID_PPI_MAX)	/* terminating ID */
+#define BCM_INT_ID_CORE_TIMERS1         (210 + BCM_INT_ID_PPI_MAX)
+#define BCM_INT_ID_CORE_TIMERS2         (211 + BCM_INT_ID_PPI_MAX)
+#define BCM_INT_ID_CORE_TIMERS3         (212 + BCM_INT_ID_PPI_MAX)
+#define BCM_INT_ID_CORE_TIMERS4         (213 + BCM_INT_ID_PPI_MAX)
 
 /* temporarily for new DMAC before new interrrupt number release */
 #define     INTP_DMAC_ABORT                                        45

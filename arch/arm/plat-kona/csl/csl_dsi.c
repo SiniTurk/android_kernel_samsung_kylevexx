@@ -270,12 +270,13 @@ static CSL_LCD_RES_T cslDsiAxipvStart(DSI_UPD_REQ_MSG_T *updMsg)
 		pr_err("axipvCfg is NULL\n");
 		return CSL_LCD_BAD_HANDLE;
 	}
-	axipvCfg->width = (updMsg->updReq.lineLenP +
-				updMsg->updReq.xStrideB) * 4;
+	axipvCfg->width = (updMsg->updReq.lineLenP + updMsg->updReq.xStrideB)
+				* updMsg->updReq.buffBpp;
 	axipvCfg->height = updMsg->updReq.lineCount;
 
 	axipvCfg->buff.sync.addr = (u32) updMsg->updReq.buff;
-	axipvCfg->buff.sync.xlen = updMsg->updReq.lineLenP * 4;
+	axipvCfg->buff.sync.xlen = updMsg->updReq.lineLenP *
+					updMsg->updReq.buffBpp;
 	axipvCfg->buff.sync.ylen = updMsg->updReq.lineCount;
 
 	axipv_change_state(AXIPV_CONFIG, axipvCfg);
@@ -1136,7 +1137,6 @@ exit_err:
 
 #define WAIT_FOR_FIFO_FLUSH_US 10
 #define WAIT_GENERAL_US 10
-
 #define WAIT_FOR_RETRY_CNT 20
 #define WAIT_FOR_RX_PKT_CNT 50
 
@@ -1334,6 +1334,7 @@ CSL_LCD_RES_T CSL_DSI_SendPacket(CSL_LCD_HANDLE client,
 		if (pkt_to_be_enabled) {
 			u32 cnt2 = 0;
 			u32 dsi_stat, int_status, int_en_mask;
+		int retry;
 			unsigned long pkt_flags;
 			pv_change_state(PV_PAUSE_STREAM_SYNC, dsiH->pvCfg);
 			local_irq_save(pkt_flags);
@@ -1370,10 +1371,14 @@ start_tx:
 				chal_dsi_tx_start(dsiH->chalH, TX_PKT_ENG_1, TRUE);
 				goto start_tx;
 			}
-			while (dsi_stat & CHAL_DSI_STAT_TXPKT1_BUSY) {
+		retry = 10*1000; /* 100ms */
+		while (dsi_stat & CHAL_DSI_STAT_TXPKT1_BUSY && retry > 0) {
+			retry--;
 				udelay(WAIT_GENERAL_US);
 				dsi_stat = chal_dsi_get_status(dsiH->chalH);
 			}
+		if (retry <= 0)
+			pr_err("CHAL_DSI_STAT_TXPKT1_BUSY timeout\n");
 			if (!(dsi_stat & PKT1_STAT_MASK))
 				pr_err("something fishy\n");
 			chal_dsi_clr_status(dsiH->chalH, PKT1_STAT_MASK);
@@ -1659,6 +1664,40 @@ CSL_LCD_RES_T CSL_DSI_OpenCmVc(CSL_LCD_HANDLE client,
 			else
 				cmVcH->cm = dsiH->dispEngine ?
 						DE1_CM_LE : DE0_CM_565P;
+			break;
+			/* RGB666 unpacked */
+		case LCD_IF_CM_O_RGB666U:
+			cmVcH->bpp_dma = 2;
+			cmVcH->bpp_wire = 3;
+			cmVcH->wc_rshift = 0;
+			if (!dsiH->pixTxporter)
+				dsiH->axipvCfg->pix_fmt =
+					AXIPV_PIXEL_FORMAT_18BPP_UNPACKED;
+			if (!dsiH->dispEngine)
+					/* for both cmd and vid modes */
+					dsiH->pvCfg->pix_fmt =
+							DSI_VIDEO_CMD_18_24BPP;
+			cmVcH->cm = dsiH->dispEngine ?
+						DE1_CM_888U : DE0_CM_666;
+			break;
+			/* RGB666 packed */
+		case LCD_IF_CM_O_RGB666:
+			cmVcH->bpp_dma = 2;
+			cmVcH->bpp_wire = 3;
+			cmVcH->wc_rshift = 0;
+			if (!dsiH->pixTxporter)
+				dsiH->axipvCfg->pix_fmt =
+					AXIPV_PIXEL_FORMAT_18BPP_PACKED;
+			if (!dsiH->dispEngine) {
+				if (dsiH->pvCfg->cmd)
+					dsiH->pvCfg->pix_fmt =
+							DSI_VIDEO_CMD_18_24BPP;
+				else
+					dsiH->pvCfg->pix_fmt =
+							PACKED_DSI_VIDEO_18BPP;
+			}
+			cmVcH->cm = dsiH->dispEngine ?
+						DE1_CM_888U : DE0_CM_666P_VID;
 			break;
 		default:
 			LCD_DBG(LCD_DBG_ERR_ID, "[CSL DSI][%d] %s: "
@@ -2363,9 +2402,16 @@ CSL_LCD_RES_T CSL_DSI_Ulps(CSL_LCD_HANDLE client, Boolean on)
 	if (!clientH->hasLock)
 		OSSEMAPHORE_Obtain(dsiH->semaDsi, TICKS_FOREVER);
 
-	if (on && !dsiH->ulps) {
-		chal_dsi_phy_state(dsiH->chalH, PHY_ULPS);
-		dsiH->ulps = TRUE;
+	if (on) {
+		if (!dsiH->ulps) {
+			chal_dsi_phy_state(dsiH->chalH, PHY_ULPS);
+			cslDsiWaitForStatAny_Poll(dsiH,
+					CHAL_DSI_STAT_PHY_CLK_ULPS |
+					CHAL_DSI_STAT_PHY_D0_ULPS,
+					NULL, 10);
+			dsiH->ulps = TRUE;
+			printk(KERN_DEBUG"DSI: enter ulps\n");
+		}
 	} else {
 		if (dsiH->ulps) {
 			chal_dsi_phy_state(dsiH->chalH, PHY_CORE);
@@ -2373,6 +2419,7 @@ CSL_LCD_RES_T CSL_DSI_Ulps(CSL_LCD_HANDLE client, Boolean on)
 						  CHAL_DSI_STAT_PHY_D0_STOP,
 						  NULL, 10);
 			dsiH->ulps = FALSE;
+			printk(KERN_DEBUG"DSI: exit ulps\n");
 		}
 	}
 
@@ -2694,3 +2741,4 @@ int Log_DebugPrintf(UInt16 logID, char *fmt, ...)
 
 	return 1;
 }
+

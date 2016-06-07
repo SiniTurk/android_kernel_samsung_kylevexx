@@ -52,6 +52,9 @@ struct lcd_config {
 	uint8_t phys_height;
 	DISPCTRL_REC_T *init_cmd_seq;
 	DISPCTRL_REC_T *init_vid_seq;
+#ifdef CONFIG_LCD_LOW_TEMP_CONVERSION
+	DISPCTRL_REC_T *init_vid_lowtemp_seq;
+#endif	
 	DISPCTRL_REC_T *slp_in_seq;
 	DISPCTRL_REC_T *slp_out_seq;
 	DISPCTRL_REC_T *scrn_on_seq;

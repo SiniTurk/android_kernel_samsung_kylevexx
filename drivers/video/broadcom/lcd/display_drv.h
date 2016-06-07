@@ -54,11 +54,11 @@ extern "C" {
 *****************************************************************************/
 	typedef enum {
 		DISPDRV_FB_FORMAT_MIN,	///<  Min Number
-
 		DISPDRV_FB_FORMAT_RGB565,	///<  RG5565 2Bpp
 		DISPDRV_FB_FORMAT_xRGB8888,	/*  xRGB8888 4Bpp */
 		DISPDRV_FB_FORMAT_xBGR8888,	/*  xBGR8888 4Bpp */
-
+		DISPDRV_FB_FORMAT_RGB666P,	/* RGB666 2Bpp */
+		DISPDRV_FB_FORMAT_RGB666U,	/* RGB666 Unpacked */
 		DISPDRV_FB_FORMAT_MAX,	///<  MAX Number
 	} DISPDRV_FB_FORMAT_T;
 
@@ -120,6 +120,9 @@ extern "C" {
 		DISPDRV_FB_FORMAT_T out_fmt;
 		uint8_t Bpp;
 		char *init_seq;
+#ifdef CONFIG_LCD_LOW_TEMP_CONVERSION
+		char *init_lowtemp_seq;
+#endif		
 		char *slp_in_seq;
 		char *slp_out_seq;
 		char *scrn_on_seq;

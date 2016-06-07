@@ -28,16 +28,17 @@
 
 #include <linux/io.h>
 #include <mach/io_map.h>
+#if defined(CONFIG_ARCH_HAWAII)
 #include <mach/rdb/brcm_rdb_gicdist.h>
+#endif
+#if defined(CONFIG_ARCH_JAVA)
+#include <mach/rdb/brcm_rdb_gic.h>
+#endif
 #if defined(CONFIG_ARCH_ISLAND)
 #include <mach/rdb/brcm_rdb_iroot_rst_mgr_reg.h>
 #else
 #include <mach/rdb/brcm_rdb_root_rst_mgr_reg.h>
 #include <mach/rdb/brcm_rdb_bmdm_rst_mgr_reg.h>
-#endif
-
-#if defined( CONFIG_KONA_WFI_WORKAROUND )
-#include <mach/wfi_count.h>
 #endif
 
 #ifdef CONFIG_BCM_IDLE_PROFILER
@@ -48,18 +49,52 @@
 #include <linux/broadcom/knllog.h>
 #endif
 
+#include <plat/cpu.h>
+
 #ifdef CONFIG_BCM_IDLE_PROFILER
 DECLARE_PER_CPU(u32, idle_count);
+#endif
+
+#ifdef CONFIG_DISABLE_USBBOOT_NEXTBOOT
+static void  __disable_usb_in_next_boot(void)
+{
+	int reg_val;
+
+	/*
+	 * Temporary:
+	 * Disable USB Boot i.e when reboot command is issued
+	 * Boot ROM would ignore looking for USB connection and will
+	 * boot from eMMC - suggestion from BOOT ROM team
+	 */
+	reg_val = readl(KONA_CHIPREG_VA + 0x1C);
+	pr_info("Address:0x%x Value:0x%x \r\n",
+		KONA_CHIPREG_VA + 0x1C, reg_val);
+	reg_val &= ~0x00000002;
+	writel(reg_val, KONA_CHIPREG_VA + 0x1C);
+	reg_val = readl(KONA_CHIPREG_VA + 0x1C);
+	pr_info("Address:0x%x Value:0x%x \r\n",
+		KONA_CHIPREG_VA + 0x1C, reg_val);
+}
 #endif
 
 static void kona_reset(char mode, const char *cmd)
 {
 	unsigned int val;
 
+#ifdef CONFIG_DISABLE_USBBOOT_NEXTBOOT
+	if (get_chip_id() < KONA_CHIP_ID_JAVA_A1)
+		__disable_usb_in_next_boot();
+#endif
+
 	/*
 	 * Disable GIC interrupt distribution.
 	 */
+#if defined(CONFIG_ARCH_HAWAII)
 	__raw_writel(0, KONA_GICDIST_VA + GICDIST_ENABLE_S_OFFSET);
+#endif
+#if defined(CONFIG_ARCH_JAVA)
+	__raw_writel(0, KONA_GICDIST_VA + GIC_GICD_CTLR_OFFSET);
+#endif
 
 #if defined(CONFIG_ARCH_ISLAND)
 	/* enable reset register access */

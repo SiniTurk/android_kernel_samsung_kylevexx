@@ -30,44 +30,51 @@ extern int crash_dump_ui_on;
 extern unsigned ramdump_enable;
 #endif
 
-#ifdef CONFIG_LCD_HX8369_CS02_SUPPORT
+#ifdef CONFIG_LCD_SC7798_CS02_SUPPORT
 #include "lcd/hx8369_cs02.h"
+#endif
+#ifdef CONFIG_LCD_SC7798_CS02_SUPPORT
+#include "lcd/sc7798_cs02.h"
 #endif
 #ifdef CONFIG_LCD_HX8369_SUPPORT
 #include "lcd/hx8369.h"
 #endif
 #ifdef CONFIG_LCD_NT35510_SUPPORT
 #include "lcd/nt35510.h"
+#include "lcd/ili9806.h"
 #endif
 #ifdef CONFIG_LCD_S6E63M0X_SUPPORT
 #include "lcd/s6e63m0x3.h"
 #endif
-#include "lcd/nt35512.h"
-#include "lcd/nt35516.h"
-#include "lcd/otm1281a.h"
-#include "lcd/otm8018b.h"
+#ifdef CONFIG_LCD_SC7798_I9060_SUPPORT
+#include "lcd/sc7798_I9060.h"
+#endif
 
 #ifdef CONFIG_FB_BRCM_LCD_EXIST_CHECK
-int lcd_exist = 1; /*  1 means LCD exist */
+int lcd_exist = 1; //  1 means LCD exist
 EXPORT_SYMBOL(lcd_exist);
 #endif
 static struct lcd_config *cfgs[] __initdata = {
 #ifdef CONFIG_LCD_HX8369_SUPPORT	
 	&hx8369_cfg,
 #endif	
-#ifdef CONFIG_LCD_HX8369_CS02_SUPPORT	
+#ifdef CONFIG_LCD_SC7798_CS02_SUPPORT	
 	&hx8369_cfg,
 #endif
+#ifdef CONFIG_LCD_SC7798_CS02_SUPPORT	
+	&sc7798_cfg,
+#endif
+#ifdef CONFIG_LCD_SC7798_I9060_SUPPORT
+	&sc7798_cfg,
+#endif
+
 #ifdef CONFIG_LCD_NT35510_SUPPORT	
 	&nt35510_cfg,
-#endif	
-	&nt35512_cfg,
-	&nt35516_cfg,
+	&ili9806_cfg,
+#endif		
 #ifdef CONFIG_LCD_S6E63M0X_SUPPORT	
 	&s6e63m0x3_cfg,
 #endif
-	&otm1281a_cfg,
-	&otm8018b_cfg,
 };
 
 static struct lcd_config * __init get_dispdrv_cfg(const char *name)

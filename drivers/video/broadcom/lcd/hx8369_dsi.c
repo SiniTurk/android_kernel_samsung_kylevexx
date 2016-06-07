@@ -66,7 +66,7 @@
 
 extern char *get_seq(DISPCTRL_REC_T *rec);
 extern void panel_write(UInt8 *buff);
-extern int panel_read(UInt8 reg, UInt8 *rxBuff, UInt8 buffLen);
+extern void panel_read(UInt8 reg, UInt8 *rxBuff, UInt8 buffLen);
 
 extern struct device *lcd_dev;
 
@@ -98,24 +98,20 @@ struct hx8369_dsi_lcd *lcd = NULL;
 u8 gPanelID[PANEL_ID_MAX];
 
 
-int panel_read_id(void)
+void panel_read_id(void)
 {
 	u8 *pPanelID = gPanelID;	
-	int ret=0;	
+	
 	pr_info("%s\n", __func__);	
 
 	/* Read panel ID*/
-	ret = panel_read(0xDA, pPanelID, 1); 
-	if(ret<0)
-		return -1;
+	panel_read(0xDA, pPanelID, 1); 
 	printk("[LCD] gPanelID1 = 0x%02X\n", pPanelID[0]);
-	ret = panel_read(0xDB, pPanelID+1, 1);
-	if(ret<0)
-		return -1;	
+	panel_read(0xDB, pPanelID+1, 1);
 	printk("[LCD] gPanelID2 = 0x%02X\n", pPanelID[1]);
 	panel_read(0xDC, pPanelID+2, 1);	
 	printk("[LCD] gPanelID3 = 0x%02X\n", pPanelID[2]);
-	return 0;
+	printk("[LCD] gPanelID = %x\n", pPanelID);	
 }
 EXPORT_SYMBOL(panel_read_id);
 
@@ -134,7 +130,7 @@ EXPORT_SYMBOL(panel_initialize);
 static ssize_t show_lcd_info(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	char temp[20];
-	sprintf(temp, "INH_55af90\n");
+	sprintf(temp, "SDC_AMS397GE84\n");
 	strcat(buf, temp);
 	return strlen(buf);
 }

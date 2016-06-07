@@ -131,7 +131,7 @@ int bcm_hsotgctrl_en_clock(bool on)
 	struct bcm_hsotgctrl_drv_data *bcm_hsotgctrl_handle =
 		local_hsotgctrl_handle;
 
-	if (!bcm_hsotgctrl_handle || !bcm_hsotgctrl_handle->otg_clk)
+	if (!bcm_hsotgctrl_handle)
 		return -EIO;
 
 	if (on) {
@@ -162,48 +162,6 @@ int bcm_hsotgctrl_en_clock(bool on)
 }
 EXPORT_SYMBOL_GPL(bcm_hsotgctrl_en_clock);
 
-
-int bcm_hsotgctrl_bc_enable_sw_ovwr(void)
-{
-	int val;
-	struct bcm_hsotgctrl_drv_data *bcm_hsotgctrl_handle =
-		local_hsotgctrl_handle;
-	int clk_cnt = clk_get_usage(bcm_hsotgctrl_handle->otg_clk);
-
-	if (NULL == local_hsotgctrl_handle) {
-		dev_warn(bcm_hsotgctrl_handle->dev,
-		  "%s: error invalid handle\n", __func__);
-		return -ENODEV;
-	}
-	if (!clk_cnt)
-		bcm_hsotgctrl_en_clock(true);
-
-	val = readl(bcm_hsotgctrl_handle->hsotg_ctrl_base +
-			HSOTG_CTRL_BC_CFG_OFFSET);
-
-	/* Clear overwrite key */
-	val &= ~(HSOTG_CTRL_BC_CFG_BC_OVWR_KEY_MASK |
-		HSOTG_CTRL_BC_CFG_SW_OVWR_EN_MASK);
-
-	/*We need this key written for this register access*/
-	val |= (BCCFG_SW_OVERWRITE_KEY |
-			HSOTG_CTRL_BC_CFG_SW_OVWR_EN_MASK);
-
-	/*Enable SW overwrite*/
-	writel(val, bcm_hsotgctrl_handle->hsotg_ctrl_base +
-			HSOTG_CTRL_BC_CFG_OFFSET);
-
-	msleep_interruptible(BC_CONFIG_DELAY_MS);
-
-	if (!clk_cnt)
-		bcm_hsotgctrl_en_clock(false);
-	return 0;
-}
-EXPORT_SYMBOL_GPL(bcm_hsotgctrl_bc_enable_sw_ovwr);
-
-
-
-
 int bcm_hsotgctrl_phy_init(bool id_device)
 {
 	int val;
@@ -214,8 +172,7 @@ int bcm_hsotgctrl_phy_init(bool id_device)
 	if (NULL == local_hsotgctrl_handle)
 		return -ENODEV;
 
-	if ((!bcm_hsotgctrl_handle->otg_clk) ||
-		  (!bcm_hsotgctrl_handle->hsotg_ctrl_base) ||
+	if ((!bcm_hsotgctrl_handle->hsotg_ctrl_base) ||
 		  (!bcm_hsotgctrl_handle->dev))
 		return -EIO;
 
@@ -301,7 +258,7 @@ int bcm_hsotgctrl_phy_deinit(void)
 	if (NULL == local_hsotgctrl_handle)
 		return -ENODEV;
 
-	if ((!bcm_hsotgctrl_handle->otg_clk) || (!bcm_hsotgctrl_handle->dev))
+	if (!bcm_hsotgctrl_handle->dev)
 		return -EIO;
 
 	if (bcm_hsotgctrl_handle->irq_enabled) {
@@ -363,13 +320,17 @@ int bcm_hsotgctrl_bc_reset(void)
 	int val;
 	struct bcm_hsotgctrl_drv_data *bcm_hsotgctrl_handle =
 		local_hsotgctrl_handle;
+	int clk_cnt ;
 
 	if (NULL == local_hsotgctrl_handle)
 		return -ENODEV;
 
-	if ((!bcm_hsotgctrl_handle->otg_clk) ||
-		  (!bcm_hsotgctrl_handle->dev))
+	if (!bcm_hsotgctrl_handle->dev)
 		return -EIO;
+
+	clk_cnt = clk_get_usage(bcm_hsotgctrl_handle->otg_clk);
+	if (!clk_cnt)
+		bcm_hsotgctrl_en_clock(true);
 
 	val = readl(bcm_hsotgctrl_handle->hsotg_ctrl_base +
 			HSOTG_CTRL_BC_CFG_OFFSET);
@@ -401,23 +362,68 @@ int bcm_hsotgctrl_bc_reset(void)
 	writel(val, bcm_hsotgctrl_handle->hsotg_ctrl_base +
 			HSOTG_CTRL_BC_CFG_OFFSET);
 
+	val = readl(bcm_hsotgctrl_handle->hsotg_ctrl_base +
+			HSOTG_CTRL_BC_CFG_OFFSET);
+	if (!clk_cnt)
+		bcm_hsotgctrl_en_clock(false);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(bcm_hsotgctrl_bc_reset);
 
+int bcm_hsotgctrl_bc_enable_sw_ovwr(void)
+{
+	int val;
+	struct bcm_hsotgctrl_drv_data *bcm_hsotgctrl_handle =
+		local_hsotgctrl_handle;
+	int clk_cnt = clk_get_usage(bcm_hsotgctrl_handle->otg_clk);
+
+	if (NULL == local_hsotgctrl_handle) {
+		dev_warn(bcm_hsotgctrl_handle->dev,
+		  "%s: error invalid handle\n", __func__);
+		return -ENODEV;
+	}
+	if (!clk_cnt)
+		bcm_hsotgctrl_en_clock(true);
+
+	val = readl(bcm_hsotgctrl_handle->hsotg_ctrl_base +
+			HSOTG_CTRL_BC_CFG_OFFSET);
+
+	/* Clear overwrite key */
+	val &= ~(HSOTG_CTRL_BC_CFG_BC_OVWR_KEY_MASK |
+		HSOTG_CTRL_BC_CFG_SW_OVWR_EN_MASK);
+
+	/*We need this key written for this register access*/
+	val |= (BCCFG_SW_OVERWRITE_KEY |
+			HSOTG_CTRL_BC_CFG_SW_OVWR_EN_MASK);
+
+	/*Enable SW overwrite*/
+	writel(val, bcm_hsotgctrl_handle->hsotg_ctrl_base +
+			HSOTG_CTRL_BC_CFG_OFFSET);
+
+	msleep_interruptible(BC_CONFIG_DELAY_MS);
+
+	if (!clk_cnt)
+		bcm_hsotgctrl_en_clock(false);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(bcm_hsotgctrl_bc_enable_sw_ovwr);
+
+
 int bcm_hsotgctrl_bc_status(unsigned long *status)
 {
 	unsigned int val;
+	int clk_cnt;
 	struct bcm_hsotgctrl_drv_data *bcm_hsotgctrl_handle =
 		local_hsotgctrl_handle;
 
 	if (NULL == local_hsotgctrl_handle)
 		return -ENODEV;
 
-	if ((!bcm_hsotgctrl_handle->otg_clk) ||
-		  (!bcm_hsotgctrl_handle->dev) || !status)
+	if ((!bcm_hsotgctrl_handle->dev) || !status)
 		return -EIO;
 
+	clk_cnt = clk_get_usage(bcm_hsotgctrl_handle->otg_clk);
+	dev_info(bcm_hsotgctrl_handle->dev, "clk cnt %d\n", clk_cnt);
 	val = readl(bcm_hsotgctrl_handle->hsotg_ctrl_base +
 			HSOTG_CTRL_BC_STATUS_OFFSET);
 	*status = val;
@@ -435,8 +441,7 @@ int bcm_hsotgctrl_bc_vdp_src_off(void)
 	if (NULL == local_hsotgctrl_handle)
 		return -ENODEV;
 
-	if ((!bcm_hsotgctrl_handle->otg_clk) ||
-		  (!bcm_hsotgctrl_handle->dev))
+	if (!bcm_hsotgctrl_handle->dev)
 		return -EIO;
 
 	val = readl(bcm_hsotgctrl_handle->hsotg_ctrl_base +
@@ -478,9 +483,6 @@ void bcm_hsotgctrl_wakeup_core(void)
 		return;
 
 	bcm_hsotgctrl_handle->usb_active = true;
-
-	/* Enable OTG AHB clock */
-	bcm_hsotgctrl_en_clock(true);
 
 	/* Disable wakeup interrupt */
 	bcm_hsotgctrl_phy_wakeup_condition(false);
@@ -550,14 +552,14 @@ static irqreturn_t bcm_hsotgctrl_wake_irq(int irq, void *dev)
 	if (NULL == local_hsotgctrl_handle)
 		return -ENODEV;
 
-	if ((!bcm_hsotgctrl_handle->otg_clk) || (!bcm_hsotgctrl_handle->dev))
+	if (!bcm_hsotgctrl_handle->dev)
 		return IRQ_NONE;
 
 	/* Disable the IRQ since already waking up */
 	disable_irq_nosync(bcm_hsotgctrl_handle->hsotgctrl_irq);
 	bcm_hsotgctrl_handle->irq_enabled = false;
-	schedule_delayed_work(&bcm_hsotgctrl_handle->wakeup_work,
-	  msecs_to_jiffies(BCM_HSOTGCTRL_WAKEUP_PROCESSING_DELAY));
+
+	schedule_delayed_work(&bcm_hsotgctrl_handle->wakeup_work, 0);
 
 	return IRQ_HANDLED;
 }
@@ -570,8 +572,7 @@ int bcm_hsotgctrl_get_clk_count(void)
 	if (NULL == local_hsotgctrl_handle)
 		return -ENODEV;
 
-	if ((!bcm_hsotgctrl_handle->otg_clk) ||
-		  (!bcm_hsotgctrl_handle->dev))
+	if (!bcm_hsotgctrl_handle->dev)
 		return -EIO;
 
 	return clk_get_usage(bcm_hsotgctrl_handle->otg_clk);
@@ -587,8 +588,7 @@ int bcm_hsotgctrl_handle_bus_suspend(send_core_event_cb_t suspend_core_cb,
 	if (NULL == local_hsotgctrl_handle)
 		return -ENODEV;
 
-	if ((!bcm_hsotgctrl_handle->otg_clk) ||
-		  (!bcm_hsotgctrl_handle->dev))
+	if (!bcm_hsotgctrl_handle->dev)
 		return -EIO;
 
 	if (suspend_core_cb)
@@ -603,11 +603,16 @@ int bcm_hsotgctrl_handle_bus_suspend(send_core_event_cb_t suspend_core_cb,
 	bcm_hsotgctrl_set_phy_iso(true);
 	mdelay(PHY_PM_DELAY_IN_MS);
 
-	/* Clear PHY clock request */
-	bcm_hsotgctrl_set_phy_clk_request(true);
-
 	/* Power down ALDO */
 	bcm_hsotgctrl_set_aldo_pdn(false);
+
+	/* Remove PHY isolation */
+	bcm_hsotgctrl_set_phy_iso(false);
+	mdelay(PHY_PM_DELAY_IN_MS);
+
+	/* Clear PHY clock request */
+	bcm_hsotgctrl_set_phy_clk_request(false);
+
 
 	/* Enable wakeup interrupt */
 	bcm_hsotgctrl_phy_wakeup_condition(true);
@@ -629,7 +634,7 @@ EXPORT_SYMBOL_GPL(bcm_hsotgctrl_handle_bus_suspend);
 static int __devinit bcm_hsotgctrl_probe(struct platform_device *pdev)
 {
 	int error = 0;
-	int val;
+	unsigned int val;
 	struct bcm_hsotgctrl_drv_data *hsotgctrl_drvdata;
 	struct bcm_hsotgctrl_platform_data *plat_data =
 	  (struct bcm_hsotgctrl_platform_data *)pdev->dev.platform_data;
@@ -651,16 +656,14 @@ static int __devinit bcm_hsotgctrl_probe(struct platform_device *pdev)
 		(void *)plat_data->hsotgctrl_virtual_mem_base;
 	if (!hsotgctrl_drvdata->hsotg_ctrl_base) {
 		dev_warn(&pdev->dev, "No vaddr for HSOTGCTRL!\n");
-		kfree(hsotgctrl_drvdata);
-		return -ENOMEM;
+		goto error_get_vaddr;
 	}
 
 	hsotgctrl_drvdata->chipregs_base =
 		(void *)plat_data->chipreg_virtual_mem_base;
 	if (!hsotgctrl_drvdata->chipregs_base) {
 		dev_warn(&pdev->dev, "No vaddr for CHIPREG!\n");
-		kfree(hsotgctrl_drvdata);
-		return -ENOMEM;
+		goto error_get_vaddr;
 	}
 
 	hsotgctrl_drvdata->dev = &pdev->dev;
@@ -669,9 +672,9 @@ static int __devinit bcm_hsotgctrl_probe(struct platform_device *pdev)
 
 	if (IS_ERR(hsotgctrl_drvdata->otg_clk)) {
 		error = PTR_ERR(hsotgctrl_drvdata->otg_clk);
-		dev_warn(&pdev->dev, "OTG clock allocation failed\n");
-		kfree(hsotgctrl_drvdata);
-		return error;
+		dev_warn(&pdev->dev,
+			 "OTG clock allocation failed - %d\n", error);
+		goto error_get_otg_clk;
 	}
 
 	hsotgctrl_drvdata->mdio_master_clk = clk_get(NULL,
@@ -679,9 +682,9 @@ static int __devinit bcm_hsotgctrl_probe(struct platform_device *pdev)
 
 	if (IS_ERR(hsotgctrl_drvdata->mdio_master_clk)) {
 		error = PTR_ERR(hsotgctrl_drvdata->mdio_master_clk);
-		dev_warn(&pdev->dev, "MDIO Mst clk alloc failed\n");
-		kfree(hsotgctrl_drvdata);
-		return error;
+		dev_warn(&pdev->dev,
+			 "MDIO Mst clk alloc failed - %d\n", error);
+		goto error_get_master_clk;
 	}
 
 	hsotgctrl_drvdata->allow_suspend = true;
@@ -689,7 +692,6 @@ static int __devinit bcm_hsotgctrl_probe(struct platform_device *pdev)
 
 	/* Init the PHY */
 	hsotgctrl_drvdata->usb_active = true;
-	bcm_hsotgctrl_en_clock(true);
 
 	mdelay(HSOTGCTRL_STEP_DELAY_IN_MS);
 
@@ -781,6 +783,17 @@ static int __devinit bcm_hsotgctrl_probe(struct platform_device *pdev)
 	INIT_DELAYED_WORK(&hsotgctrl_drvdata->wakeup_work,
 			  bcm_hsotgctrl_delayed_wakeup_handler);
 
+	/* disable Bvalid interrupt bit
+	 * This interrupt is not currently used as the STAT2 detection
+	 * happens from the PMU side. Beacsue of not clearing this bit
+	 * Master clock gating feature was not working in Java. This
+	 * is not a issue in case of Hawaii
+	 * */
+	val = readl(hsotgctrl_drvdata->hsotg_ctrl_base +
+				HSOTG_CTRL_USBOTGCONTROL_OFFSET);
+	val |= 1 << HSOTG_CTRL_USBOTGCONTROL_BVALID_CLR_SHIFT;
+	writel(val, hsotgctrl_drvdata->hsotg_ctrl_base +
+			HSOTG_CTRL_USBOTGCONTROL_OFFSET);
 	/* request_irq enables irq */
 	hsotgctrl_drvdata->irq_enabled = true;
 	error = request_irq(hsotgctrl_drvdata->hsotgctrl_irq,
@@ -797,8 +810,11 @@ static int __devinit bcm_hsotgctrl_probe(struct platform_device *pdev)
 	return 0;
 
 Error_bcm_hsotgctrl_probe:
-	clk_put(hsotgctrl_drvdata->otg_clk);
 	clk_put(hsotgctrl_drvdata->mdio_master_clk);
+error_get_master_clk:
+	clk_put(hsotgctrl_drvdata->otg_clk);
+error_get_otg_clk:
+error_get_vaddr:
 	kfree(hsotgctrl_drvdata);
 	return error;
 }

@@ -595,11 +595,11 @@ static int pi_set_ccu_freq(struct pi *pi, u32 policy, u32 opp_inx)
 			"%s:%s  policy => %x freq_id => %d\n",
 			__func__, pi->pi_ccu[inx]->name,
 			policy, opp_info->freq_id);
-
+#ifdef CONFIG_KONA_CPU_PM_HANDLER
 			log_pm(num_dbg_args[DBG_MSG_PI_SET_FREQ_OPP],
 				DBG_MSG_PI_SET_FREQ_OPP, pi->id,
 					opp_inx, opp_info->freq_id);
-
+#endif
 			res = ccu_set_freq_policy(to_ccu_clk
 				(pi->pi_ccu[inx]),
 				CCU_POLICY(policy), opp_info);
@@ -629,8 +629,10 @@ int pi_set_policy(const struct pi *pi, u32 policy, int type)
 
 		pi_change_notify(pi->id, PI_NOTIFY_POLICY_CHANGE,
 				 old_pol, policy, PI_PRECHANGE);
+#ifdef CONFIG_KONA_CPU_PM_HANDLER
 		log_pm(num_dbg_args[DBG_MSG_PI_SET_FREQ_POLICY],
 			DBG_MSG_PI_SET_FREQ_POLICY, pi->id, old_pol, policy);
+#endif
 		res =
 		    pwr_mgr_event_set_pi_policy(pi->qos_sw_event_id, pi->id,
 						&cfg);
@@ -654,8 +656,10 @@ int pi_set_policy(const struct pi *pi, u32 policy, int type)
 
 		pi_change_notify(pi->id, PI_NOTIFY_POLICY_CHANGE,
 				 old_pol, policy, PI_PRECHANGE);
+#ifdef CONFIG_KONA_CPU_PM_HANDLER
 		log_pm(num_dbg_args[DBG_MSG_PI_SET_FREQ_POLICY],
 			DBG_MSG_PI_SET_FREQ_POLICY, pi->id, old_pol, policy);
+#endif
 		res =
 		    pwr_mgr_event_set_pi_policy(pi->dfs_sw_event_id, pi->id,
 						&cfg);
@@ -786,8 +790,10 @@ static int pi_def_enable(struct pi *pi, int enable)
 	pi_dbg(pi->id, PI_LOG_EN_DIS,
 	       "%s: pi_name:%s, enable:%d usageCount:%d\n",
 	       __func__, pi->name, enable, pi->usg_cnt);
+#ifdef CONFIG_KONA_CPU_PM_HANDLER
 	log_pm(num_dbg_args[DBG_MSG_PI_ENABLE],
 		DBG_MSG_PI_ENABLE, pi->id, enable);
+#endif
 	if (enable) {
 		policy = pi->pi_state[PI_MGR_ACTIVE_STATE_INX].state_policy;
 		pi_dbg(pi->id, PI_LOG_EN_DIS,
@@ -1689,6 +1695,12 @@ struct pi *pi_mgr_get(int pi_id)
 }
 EXPORT_SYMBOL(pi_mgr_get);
 
+int pi_mgr_initialized(void)
+{
+	return pi_mgr.init;
+}
+EXPORT_SYMBOL(pi_mgr_initialized);
+
 int pi_mgr_init()
 {
 	memset(&pi_mgr, 0, sizeof(pi_mgr));
@@ -1933,6 +1945,8 @@ static ssize_t pi_debug_set_dfs_client_opp(struct file *file,
 		len = 15;
 	else
 		len = count;
+/* usage of sscanf and copy from user are for debugfs operations, so they will
+ * not create any problems, so using coverity ignore comments */
 	/* coverity[secure_coding] */
 	/* coverity[tainted_data_argument] */
 	if (copy_from_user(input_str, buf, len))
@@ -1941,6 +1955,7 @@ static ssize_t pi_debug_set_dfs_client_opp(struct file *file,
 	/* coverity[tainted_data_argument] */
 	sscanf(input_str, "%s%u", opp_str, &weightage);
 	/* coverity[secure_coding] */
+	/* coverity[tainted_data_argument] */
 	if (isdigit(opp_str[0]))
 		opp = (opp_str[0] - toascii('0'));
 	else
@@ -2159,6 +2174,8 @@ static ssize_t pi_opp_set_min_lmt(struct file *file, const char __user *buf,
 		len = 15;
 	else
 		len = count;
+/* usage of sscanf and copy from user are for debugfs operations, so they will
+ * not create any problems, so using coverity ignore comments */
 	/* coverity[secure_coding] */
 	/* coverity[tainted_data_argument] */
 	if (copy_from_user(input_str, buf, len))
@@ -2167,6 +2184,7 @@ static ssize_t pi_opp_set_min_lmt(struct file *file, const char __user *buf,
 	/* coverity[tainted_data_argument] */
 	sscanf(input_str, "%s", opp_str);
 	/* coverity[secure_coding] */
+	/* coverity[tainted_data_argument] */
 	if (isdigit(opp_str[0]))
 		val = (opp_str[0] - toascii('0'));
 	else
@@ -2230,6 +2248,8 @@ static ssize_t pi_opp_set_max_lmt(struct file *file, const char __user *buf,
 		len = 15;
 	else
 		len = count;
+/* usage of sscanf and copy from user are for debugfs operations, so they will
+ * not create any problems, so using coverity ignore comments */
 	/* coverity[secure_coding] */
 	/* coverity[tainted_data_argument] */
 	if (copy_from_user(input_str, buf, len))
@@ -2238,6 +2258,7 @@ static ssize_t pi_opp_set_max_lmt(struct file *file, const char __user *buf,
 	/* coverity[tainted_data_argument] */
 	sscanf(input_str, "%s", opp_str);
 	/* coverity[secure_coding] */
+	/* coverity[tainted_data_argument] */
 	if (isdigit(opp_str[0]))
 		val = (opp_str[0] - toascii('0'));
 	else
@@ -2291,6 +2312,86 @@ static const struct file_operations pi_opp_max_lmt_fops = {
 	.read = pi_opp_get_max_lmt,
 	.write = pi_opp_set_max_lmt
 };
+
+static ssize_t pi_dfs_set_opp_list(struct file *file, const char __user *buf,
+		size_t count, loff_t *ppos)
+{
+	struct pi *pi = file->private_data;
+	u32 len = 0;
+	u32 i = 0xFF;
+	u32 c = 0xFF;
+	u32 f = 0xFF;
+	char input_str[15];
+
+	struct pi_opp *pi_opp;
+	struct opp_info *opp_info;
+	BUG_ON(!pi || !pi->pi_opp);
+	pi_opp = pi->pi_opp;
+
+	BUG_ON(pi == NULL);
+	if (count > 15)
+		len = 15;
+	else
+		len = count;
+/* usage of sscanf and copy from user are for debugfs operations, so they will
+ * not create any problems, so using coverity ignore comments */
+	/* coverity[secure_coding] */
+	/* coverity[tainted_data_argument] */
+	if (copy_from_user(input_str, buf, len))
+		return -EFAULT;
+	/* coverity[secure_coding] */
+	/* coverity[tainted_data_argument] */
+	sscanf(input_str, "%u%u%u", &c, &i, &f);
+
+	if (c == 0xFF || i == 0xFF || f == 0xFF) {
+		pr_info("invalid  param\n");
+		goto ret;
+	}
+	if (c >= pi->num_ccu_id ||
+		i >= pi_opp->num_opp) {
+		pr_info("invalid  param\n");
+		goto ret;
+	}
+	opp_info = &pi_opp->opp_info[c][i];
+	opp_info->freq_id = f;
+ret:
+	return count;
+}
+
+static int pi_dfs_get_opp_list(struct file *file, char __user *buf,
+		size_t count, loff_t *ppos)
+{
+	struct pi *pi = file->private_data;
+	u32 len = 0;
+	int i;
+	int c;
+	struct pi_opp *pi_opp;
+	struct opp_info *opp_info;
+	BUG_ON(!pi || !pi->pi_opp);
+	pi_opp = pi->pi_opp;
+	for (c = 0; c < pi->num_ccu_id; c++) {
+		len += snprintf(debug_fs_buf + len, sizeof(debug_fs_buf) - len,
+		"****%s****\n",
+		pi->pi_ccu[c]->name ? pi->pi_ccu[c]->name : "NULL");
+		for (i = 0; i < pi_opp->num_opp; i++) {
+			opp_info = &pi_opp->opp_info[c][i];
+			len += snprintf(debug_fs_buf + len,
+					sizeof(debug_fs_buf) - len,
+					"%s:%d\n",
+					get_opp_name(opp_info->opp_id),
+					opp_info->freq_id);
+		}
+	}
+	return simple_read_from_buffer(buf, count,
+			ppos, debug_fs_buf, len);
+}
+
+static const struct file_operations pi_dfs_opp_list_fops = {
+	.open = pi_debugfs_open,
+	.read = pi_dfs_get_opp_list,
+	.write = pi_dfs_set_opp_list,
+};
+
 
 #ifdef CONFIG_KONA_PI_DFS_STATS
 static ssize_t pi_dfs_get_time_in_state(struct file *file,
@@ -2588,60 +2689,10 @@ static const struct file_operations all_req_fops = {
 	.read = read_file_all_req,
 };
 
-static ssize_t read_file_pi_count(struct file *file, char __user *user_buf,
-				  size_t count, loff_t *ppos)
-{
-	int i, counter = 0;
-	u32 len = 0;
-	struct pi *pi;
-	bool overflow;
-	ktime_t _time;
-	s64 ms;
-
-	_time = ktime_get();
-	ms = ktime_to_ms(_time);
-	for (i = 0; i < PI_MGR_PI_ID_MAX; i++) {
-		pi = pi_mgr.pi_list[i];
-		if (pi == NULL)
-			continue;
-
-		counter = pwr_mgr_pi_counter_read(pi->id, &overflow);
-		if (counter < 0)
-			return -ENOMEM;
-		len += snprintf(debug_fs_buf + len, sizeof(debug_fs_buf) - len,
-				"%8s(%1d): counter:0x%08X, overflow:%d, "
-				"systime:%16ld mS\n",
-				pi->name, pi->id, counter, overflow,
-				(long int)ms);
-	}
-
-	return simple_read_from_buffer(user_buf, count,
-				       ppos, debug_fs_buf, len);
-}
-
-static const struct file_operations pi_debug_count_fops = {
-	.open = pi_debugfs_open,
-	.read = read_file_pi_count,
-};
-
-static int pi_debug_count_clear(void *data, u64 val)
-{
-	if (val == 1) {
-		pm_mgr_pi_count_clear(true);
-		pm_mgr_pi_count_clear(false);
-	} else
-		pi_dbg(0, PI_LOG_ERR, "Invalid parm\n");
-	return 0;
-}
-
-DEFINE_SIMPLE_ATTRIBUTE(pi_debug_count_clr_fops, NULL, pi_debug_count_clear,
-			"%llu\n");
-
 static struct dentry *dent_pi_root_dir;
 int __init pi_debug_init(void)
 {
 	struct dentry *dent_all_requests = 0, *dent_chip_reset = 0;
-	struct dentry *dent_pi_count = 0, *dent_pi_count_clr = 0;
 	dent_pi_root_dir = debugfs_create_dir("power_domains", 0);
 	if (!dent_pi_root_dir)
 		return -ENOMEM;
@@ -2662,21 +2713,6 @@ int __init pi_debug_init(void)
 	if (!dent_chip_reset)
 		pi_dbg(0, PI_LOG_ERR,
 		       "Error registering all_requests with debugfs\n");
-
-	dent_pi_count = debugfs_create_file("pi_count", S_IRUSR,
-					    dent_pi_root_dir, NULL,
-					    &pi_debug_count_fops);
-	if (!dent_pi_count)
-		pi_dbg(0, PI_LOG_ERR,
-		       "Error registering pi_count with debugfs\n");
-
-	dent_pi_count_clr = debugfs_create_file("pi_count_clear",
-						S_IRUSR | S_IWUSR,
-						dent_pi_root_dir, NULL,
-						&pi_debug_count_clr_fops);
-	if (!dent_pi_count_clr)
-		pi_dbg(0, PI_LOG_ERR,
-		       "Error registering pi_count_clear with debugfs\n");
 
 	return 0;
 
@@ -2856,6 +2892,10 @@ int __init pi_debug_add_pi(struct pi *pi)
 			debugfs_create_file("opp_lmt_min", S_IRUSR | S_IWUSR,
 				dent_dfs_dir, pi, &pi_opp_min_lmt_fops);
 		}
+		debugfs_create_file("opp_list", S_IWUSR | S_IRUSR,
+					dent_dfs_dir, pi,
+					&pi_dfs_opp_list_fops);
+
 	}
 
 	return 0;

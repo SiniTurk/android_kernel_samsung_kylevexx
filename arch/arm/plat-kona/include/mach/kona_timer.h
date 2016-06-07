@@ -28,31 +28,25 @@
 
 /* There is 5 clock cycles delay in HUB Timer by ASIC limitation.
  */
-#define MIN_KONA_DELTA_CLOCK     5
+#define MIN_KONA_DELTA_CLOCK     6
 
 /* On 32-bit mod timer, using large or max value 0xffffffff may trigger early
  * timer interrupt. It has to be limited to avoid timer misbehavior.
  */
 #define MAX_KONA_COUNT_CLOCK  0x7FFFFFFF
 
+/* quick hack to enable timer debugging */
+//#define CONFIG_KONA_TIMER_DEBUG
+
+/* Timer module specific data structures */
+struct kona_timer;
+
 /* Channel specific data structures */
-typedef int (*intr_callback)(void *data);
+typedef int (*intr_callback) (void *data);
 
 enum timer_mode {
-	MODE_PERIODIC=0,
+	MODE_PERIODIC = 0,
 	MODE_ONESHOT,
-};
-
-enum config_state {
-	NOT_CONFIGURED = 0,	/* Timer module not configured */
-	CONFIGURED_FREE,	/* Timer module configured but
-				 * channels are not being used so
-				 * can change the rate
-				 */
-	CONFIGURED_BUSY,	/* Timer module configured and channels
-				 * are being used so re-configuring
-				 * the rate is not allowed
-				 */
 };
 
 struct timer_ch_cfg {
@@ -64,53 +58,30 @@ struct timer_ch_cfg {
 				 */
 };
 
-/* Timer module specific data structures */
 struct kona_timer {
-	int    ch_num;
-	int    busy;
+	int ch_num;
+	int busy;
 	struct timer_ch_cfg cfg;
 	int irq;
 	struct kona_timer_module *ktm;
 	unsigned long expire;
 #ifdef CONFIG_KONA_TIMER_DEBUG
-	unsigned long load;
-	unsigned long max_delta;
-	unsigned long max_delta_load;
-	unsigned long max_delta_expire;
-	unsigned long max_delta_expired;
-	unsigned long max_delta_early_expire;
-	unsigned long max_delta_load_early_expire;
 	unsigned long nr_5;
 	unsigned long nr_10;
 	unsigned long nr_50;
 	unsigned long nr_100;
 	unsigned long nr_500;
 	unsigned long nr_500_plus;
-	unsigned long nr_total;
-	unsigned long nr_timedout;
 	unsigned long nr_early_expire;
 	unsigned long nr_wrong_interrupt;
-	unsigned long nr_canceled;
-	unsigned long nr_canceled_expired;
-	unsigned long nr_canceled_expired_intr;
-#endif
+#endif	
 };
 
-struct kona_timer_module {
-	struct kona_timer *pkt;
-	spinlock_t lock;
-	int num_of_timers;
-	char name[255];
-	char clk_name[255];
-	enum config_state cfg_state;
-	void __iomem *reg_base;
-	unsigned long rate;
-#ifdef CONFIG_KONA_TIMER_DEBUG
-	unsigned long max_repeat_count;
-#endif
-};
-
+#ifdef CONFIG_ARCH_JAVA
+#define NUM_OF_TIMER_MODULES	(3)
+#else
 #define NUM_OF_TIMER_MODULES	(2)
+#endif
 #define NUM_OF_CHANNELS		(4)
 
 /* Timer Module related APIs */
@@ -136,21 +107,25 @@ struct kona_timer_module {
  *  kona_timer_modules_init - Initialize the data structures
  *  that depcits the Kona timer modules
  */
-int kona_timer_modules_init (void);
+int kona_timer_modules_init(void);
+
+/*
+ * Obtain Kona timer clocks and store in its internal data structure
+ */
+void kona_timer_clk_setup(void);
 
 /*
  * kona_timer_module_set_rate - Set the speed in which a timer module should count
  * name - Name of the Timer to configure
  * rate - Speed 
  */
-int kona_timer_module_set_rate(char* name, unsigned int rate);
+int kona_timer_module_set_rate(char *name, unsigned int rate);
 
 /* 
  * kona_timer_module_get_rate - Get the speed in which a timer module is running
  * name - Name of the Timer module 
  */
-int kona_timer_module_get_rate (char* name);
-
+int kona_timer_module_get_rate(char *name);
 
 /* Channel/Timer related APIs */
 /*
@@ -159,7 +134,7 @@ int kona_timer_module_get_rate (char* name);
  *  channel - Channel number requested. If this is -1 then by default
  *            the next available channel will be returned
  */
-struct kona_timer* kona_timer_request(char* name, int channel);
+struct kona_timer *kona_timer_request(char *name, int channel);
 
 /*
  *  kona_timer_config - Configure the following parameters of the timer
@@ -170,7 +145,7 @@ struct kona_timer* kona_timer_request(char* name, int channel);
  *  kt - Kona timer context (returned by kona_timer_request())
  *  pcfg - pointer to the configuration structure
  */
-int kona_timer_config (struct kona_timer *kt, struct timer_ch_cfg *pcfg);  
+int kona_timer_config(struct kona_timer *kt, struct timer_ch_cfg *pcfg);
 
 /*
  * kona_timer_set_match_start - Set the match register for the timer and start
@@ -182,14 +157,14 @@ int kona_timer_config (struct kona_timer *kt, struct timer_ch_cfg *pcfg);
  *         match register. Once the timer is started when the counter 
  *         reaches this value an interrupt will be raised
  */
-int kona_timer_set_match_start (struct kona_timer* kt, unsigned long load);
+int kona_timer_set_match_start(struct kona_timer *kt, unsigned long load);
 
 /*
  * kona_timer_free - Read the counter register of the timer 
  *
  * kt - Timer context to be freed.
  */
-unsigned int kona_timer_get_counter(struct kona_timer* kt);
+unsigned int kona_timer_get_counter(struct kona_timer *kt);
 /*
  * kona_timer_disable_and_clear - Disable the timer and clear the 
  * interrupt
@@ -203,7 +178,23 @@ int kona_timer_disable_and_clear(struct kona_timer *kt);
  *
  * kt - The timer context to be stopped.
  */
-int kona_timer_stop (struct kona_timer* kt);
+int kona_timer_stop(struct kona_timer *kt);
+
+/*
+ * kona_timer_suspend - Suspend the timer by shutting off its clock source.
+ *
+ * kt - Timer context.
+ *
+ */
+int kona_timer_suspend(struct kona_timer *kt);
+
+/*
+ * kona_timer_resume - Resume the timer by re-enabling its clock source.
+ *
+ * kt - Timer context.
+ *
+ */
+int kona_timer_resume(struct kona_timer *kt);
 
 /*
  * kona_timer_free - Release the timer, after this call the timer can be used
@@ -211,7 +202,7 @@ int kona_timer_stop (struct kona_timer* kt);
  *
  * kt - Timer context to be freed.
  */
-int kona_timer_free (struct kona_timer* kt);
+int kona_timer_free(struct kona_timer *kt);
 
 /*
  * kona_hubtimer_get_counter - Returns the counter value of aon hub timer
@@ -227,14 +218,5 @@ void kona_hubtimer_save_state(bool print_state);
  * kona_slavetimer_get_counter - Returns the counter value of slave timer
  */
 unsigned long kona_slavetimer_get_counter(void);
-
-#ifdef CONFIG_KONA_TIMER_DEBUG
-/*
- * kona_get_timer_module - Returns the kona timer module.
- *
- * name - The name of the kona timer module to return.
- */
-struct kona_timer_module *kona_get_timer_module(char *name);
-#endif
 
 #endif /* __PLAT_KONA_TIMER_H */

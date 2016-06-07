@@ -153,7 +153,6 @@ static CHAL_CAM_CHAN_t cslCamChalPortChan(CSL_CAM_PORT_CHAN_T csl_val);
 static Int32 cslCamClock(UInt32 clk_select, UInt32 freq, Boolean enable);
 static void cslCamReset(void);
 
-
 /******************************************************************************
  Static  Functions
  *****************************************************************************/
@@ -522,7 +521,6 @@ static CHAL_CAM_PIXEL_SIZE_t cslCamChalPixelSize(CSL_CAM_PIXEL_SIZE_T csl_val)
 	return chal_val;
 }
 
-
 /*****************************************************************************
  * NAME:    cslCamReset
  *
@@ -540,7 +538,6 @@ static void cslCamReset(void)
 	/* Should clear and set CSI0_SOFT_RSTN_MASK */
 	clk_reset(unicam_clk);
 }
-
 
 /*****************************************************************************
  * NAME:    cslCamClock
@@ -848,8 +845,8 @@ Int32 csl_cam_open(pCSL_CAM_INTF_CFG_st intfCfg, CSL_CAM_HANDLE *cslCamH)
 						    &chal_cam_param_st);
 			// Set default Controller settings                        
 			chal_cam_cfg_cntrl_st.packet_timeout = 15;
-			if (cslCamDrv.intf_cfg.input_mode ==
-			    CHAL_CAM_INPUT_DUAL_LANE) {
+			if ((int)cslCamDrv.intf_cfg.input_mode ==
+			    (int)CHAL_CAM_INPUT_DUAL_LANE) {
 				chal_cam_cfg_cntrl_st.packet_timeout = 15;
 			}
 			chal_cam_cfg_cntrl_st.line_start_suppress = FALSE;

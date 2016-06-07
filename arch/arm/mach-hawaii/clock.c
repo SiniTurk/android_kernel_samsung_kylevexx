@@ -52,8 +52,9 @@
 #include <linux/clk.h>
 #include <asm/div64.h>
 #include <plat/pi_mgr.h>
-#include <mach/cpu.h>
+#include <plat/cpu.h>
 #include "pm_params.h"
+#include <mach/kona_timer.h>
 
 #ifdef CONFIG_DEBUG_FS
 /*GPIO0-15/ debug bus select values*/
@@ -64,6 +65,17 @@
 #define SDDAT_OFFSET(X) (PADCTRLREG_SDDAT0_OFFSET + (4 * (X)))
 #define GPIO_DBG_PINS 16
 #define SDDAT_DBG_PINS 4
+#endif
+
+#if defined(CONFIG_BCM_HWCAPRI_1605_A2)
+/* Non-turbo platforms run a 1GHz frequency but
+ * we cannot expect an exact 1GHz rate. Adding a
+ * an extra 1000Hz as a safegaurd.
+ */
+#define MAX_A9_FREQ 1000001000
+
+static u32 cur_freq_id;
+static u32 max_a9_rate;
 #endif
 
 static const char *const ccu_clks[] = {
@@ -243,7 +255,6 @@ static int en_8ph_pll1_clk_enable(struct clk *clk, int enable)
 			ROOT_CLK_MGR_REG_PLL1CTRL0_OFFSET) &
 			ROOT_CLK_MGR_REG_PLL1CTRL0_PLL1_8PHASE_EN_MASK) &&
 			insurance);
-		BUG_ON(insurance == 0);
 		CCU_ACCESS_EN(ref_clk->ccu_clk, 0);
 		if (insurance == 0) {
 			__WARN();
@@ -848,11 +859,12 @@ static struct ccu_clk CLK_NAME(kproc) = {
 	.lvm0_3_offset = KPROC_CLK_MGR_REG_LVM0_3_OFFSET,
 	.vlt0_3_offset = KPROC_CLK_MGR_REG_VLT0_3_OFFSET,
 	.vlt4_7_offset = KPROC_CLK_MGR_REG_VLT4_7_OFFSET,
-#ifdef CONFIG_DEBUG_FS
+
 	.policy_dbg_offset = KPROC_CLK_MGR_REG_POLICY_DBG_OFFSET,
 	.policy_dbg_act_freq_shift = KPROC_CLK_MGR_REG_POLICY_DBG_ACT_FREQ_SHIFT,
 	.policy_dbg_act_policy_shift =
 		KPROC_CLK_MGR_REG_POLICY_DBG_ACT_POLICY_SHIFT,
+#ifdef CONFIG_DEBUG_FS
 	.clk_mon_offset = KPROC_CLK_MGR_REG_CLKMON_OFFSET,
 #endif
 	.freq_volt = PROC_CCU_FREQ_VOLT_TBL,
@@ -1164,16 +1176,17 @@ static int dig_clk_init(struct clk *clk)
 	ccu_write_access_enable(peri_clk->ccu_clk, true);
 
 	if (PERI_SRC_CLK_VALID(peri_clk)) {
-		src_clks = &peri_clk->src_clk;
+		src_clks = &peri_clk->src;
 		for (inx = 0; inx < src_clks->count; inx++) {
-			if (src_clks->clk[inx]->ops &&
-				src_clks->clk[inx]->ops->init)
-				src_clks->clk[inx]->ops->init(src_clks->
-								clk[inx]);
+			if (src_clks->list[inx].clk->ops &&
+				src_clks->list[inx].clk->ops->init)
+				src_clks->list[inx].clk->ops->init(
+						src_clks->list[inx].clk);
 		}
 		/*set the default src clock*/
-		BUG_ON(peri_clk->src_clk.src_inx >= peri_clk->src_clk.count);
-		peri_clk_set_pll_select(peri_clk, peri_clk->src_clk.src_inx);
+		BUG_ON(peri_clk->src.src_inx >= peri_clk->src.count);
+		peri_clk_set_pll_select(peri_clk,
+				src_clks->list[src_clks->src_inx].val);
 	}
 
 	if (clk->flags & AUTO_GATE)
@@ -1202,12 +1215,54 @@ static int dig_clk_init(struct clk *clk)
 }
 
 struct gen_clk_ops dig_ch_peri_clk_ops;
-/*
-Peri clock name DIG_CH0
-*/
-/*Source list of digital channels. Common for CH0, CH1, CH2, CH3 */
-static struct clk *dig_ch_peri_clk_src_list[] =
-	DEFINE_ARRAY_ARGS(CLK_PTR(crystal), CLK_PTR(pll0), CLK_PTR(pll1));
+struct gen_clk_ops dig_prediv_peri_clk_ops;
+
+static struct clock_source dig_prediv_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(pll0, 1), INIT_SRC_CLK(pll1, 2),
+};
+
+/* Dig_prediv clock: no physical clock as such, user has to make sure that
+   he has enabled one of the channel clocks before set_rate for this clk.
+   This is done to accomodate changing of chnl_clk freq independently */
+
+static struct peri_clk CLK_NAME(dig_prediv) = {
+	.clk =	{
+		.flags = DIG_PREDIV_PERI_CLK_FLAGS,
+		.clk_type = CLK_TYPE_PERI,
+		.id = CLK_DIG_PREDIV_PERI_CLK_ID,
+		.name = DIG_PREDIV_PERI_CLK_NAME_STR,
+		.dep_clks = DEFINE_ARRAY_ARGS(NULL),
+		.ops = &dig_prediv_peri_clk_ops,
+	},
+	.ccu_clk = &CLK_NAME(root),
+	.clk_div = {
+		.div_offset = ROOT_CLK_MGR_REG_DIG_PRE_DIV_OFFSET,
+		.div_mask =
+		ROOT_CLK_MGR_REG_DIG_PRE_DIV_DIGITAL_PRE_DIV_MASK,
+		.div_shift =
+			ROOT_CLK_MGR_REG_DIG_PRE_DIV_DIGITAL_PRE_DIV_SHIFT,
+		.div_trig_offset = ROOT_CLK_MGR_REG_DIG_TRG_OFFSET,
+		.div_trig_mask =
+			ROOT_CLK_MGR_REG_DIG_TRG_DIGITAL_PRE_TRIGGER_MASK,
+		.pll_select_offset = ROOT_CLK_MGR_REG_DIG_PRE_DIV_OFFSET,
+		.pll_select_mask =
+		ROOT_CLK_MGR_REG_DIG_PRE_DIV_DIGITAL_PRE_PLL_SELECT_MASK,
+		.pll_select_shift =
+		ROOT_CLK_MGR_REG_DIG_PRE_DIV_DIGITAL_PRE_PLL_SELECT_SHIFT,
+	},
+	.src = {
+	    .count = ARRAY_SIZE(dig_prediv_peri_clk_src_list),
+	    .src_inx = 0,
+	    .list = dig_prediv_peri_clk_src_list,
+	},
+};
+
+static struct clock_source dig_chnl_clk_src_list[] = {
+	INIT_SRC_CLK(dig_prediv, 0),
+};
+
+/* Peri clock name DIG_CH0 */
+
 static struct peri_clk CLK_NAME(dig_ch0) = {
 	.clk =	{
 		.flags = DIG_CH0_PERI_CLK_FLAGS,
@@ -1222,26 +1277,20 @@ static struct peri_clk CLK_NAME(dig_ch0) = {
 	.clk_en_mask = ROOT_CLK_MGR_REG_DIG_CLKGATE_DIGITAL_CH0_CLK_EN_MASK,
 	.stprsts_mask = ROOT_CLK_MGR_REG_DIG_CLKGATE_DIGITAL_CH0_STPRSTS_MASK,
 	.clk_div = {
-	.div_offset = ROOT_CLK_MGR_REG_DIG0_DIV_OFFSET,
-	.div_mask = ROOT_CLK_MGR_REG_DIG0_DIV_DIGITAL_CH0_DIV_MASK,
-	.div_shift = ROOT_CLK_MGR_REG_DIG0_DIV_DIGITAL_CH0_DIV_SHIFT,
-	.pre_div_offset = ROOT_CLK_MGR_REG_DIG_PRE_DIV_OFFSET,
-	.pre_div_mask = ROOT_CLK_MGR_REG_DIG_PRE_DIV_DIGITAL_PRE_DIV_MASK,
-	.pre_div_shift = ROOT_CLK_MGR_REG_DIG_PRE_DIV_DIGITAL_PRE_DIV_SHIFT,
-	.div_trig_offset = ROOT_CLK_MGR_REG_DIG_TRG_OFFSET,
-	.div_trig_mask = ROOT_CLK_MGR_REG_DIG_TRG_DIGITAL_CH0_TRIGGER_MASK,
-	.prediv_trig_offset = ROOT_CLK_MGR_REG_DIG_TRG_OFFSET,
-	.prediv_trig_mask = ROOT_CLK_MGR_REG_DIG_TRG_DIGITAL_PRE_TRIGGER_MASK,
-	.pll_select_offset = ROOT_CLK_MGR_REG_DIG_PRE_DIV_OFFSET,
-	.pll_select_mask =
-		ROOT_CLK_MGR_REG_DIG_PRE_DIV_DIGITAL_PRE_PLL_SELECT_MASK,
-	.pll_select_shift =
-		ROOT_CLK_MGR_REG_DIG_PRE_DIV_DIGITAL_PRE_PLL_SELECT_SHIFT,
+		.div_offset = ROOT_CLK_MGR_REG_DIG0_DIV_OFFSET,
+		.div_mask = ROOT_CLK_MGR_REG_DIG0_DIV_DIGITAL_CH0_DIV_MASK,
+		.div_shift = ROOT_CLK_MGR_REG_DIG0_DIV_DIGITAL_CH0_DIV_SHIFT,
+		.div_trig_offset = ROOT_CLK_MGR_REG_DIG_TRG_OFFSET,
+		.div_trig_mask =
+			ROOT_CLK_MGR_REG_DIG_TRG_DIGITAL_CH0_TRIGGER_MASK,
+		.prediv_trig_offset = ROOT_CLK_MGR_REG_DIG_TRG_OFFSET,
+		.prediv_trig_mask =
+			ROOT_CLK_MGR_REG_DIG_TRG_DIGITAL_PRE_TRIGGER_MASK,
 	},
-	.src_clk = {
-	    .count = ARRAY_SIZE(dig_ch_peri_clk_src_list),
+	.src = {
+	    .count = ARRAY_SIZE(dig_chnl_clk_src_list),
 	    .src_inx = 0,
-	    .clk = dig_ch_peri_clk_src_list,
+	    .list = dig_chnl_clk_src_list,
 	},
 };
 
@@ -1264,26 +1313,20 @@ static struct peri_clk CLK_NAME(dig_ch1) = {
 		ROOT_CLK_MGR_REG_DIG_CLKGATE_DIGITAL_CH1_HW_SW_GATING_SEL_MASK,
 	.stprsts_mask = ROOT_CLK_MGR_REG_DIG_CLKGATE_DIGITAL_CH1_STPRSTS_MASK,
 	.clk_div = {
-	.div_offset = ROOT_CLK_MGR_REG_DIG1_DIV_OFFSET,
-	.div_mask = ROOT_CLK_MGR_REG_DIG1_DIV_DIGITAL_CH1_DIV_MASK,
-	.div_shift = ROOT_CLK_MGR_REG_DIG1_DIV_DIGITAL_CH1_DIV_SHIFT,
-	.pre_div_offset = ROOT_CLK_MGR_REG_DIG_PRE_DIV_OFFSET,
-	.pre_div_mask = ROOT_CLK_MGR_REG_DIG_PRE_DIV_DIGITAL_PRE_DIV_MASK,
-	.pre_div_shift = ROOT_CLK_MGR_REG_DIG_PRE_DIV_DIGITAL_PRE_DIV_SHIFT,
-	.div_trig_offset = ROOT_CLK_MGR_REG_DIG_TRG_OFFSET,
-	.div_trig_mask = ROOT_CLK_MGR_REG_DIG_TRG_DIGITAL_CH1_TRIGGER_MASK,
-	.prediv_trig_offset = ROOT_CLK_MGR_REG_DIG_TRG_OFFSET,
-	.prediv_trig_mask = ROOT_CLK_MGR_REG_DIG_TRG_DIGITAL_PRE_TRIGGER_MASK,
-	.pll_select_offset = ROOT_CLK_MGR_REG_DIG_PRE_DIV_OFFSET,
-	.pll_select_mask =
-		ROOT_CLK_MGR_REG_DIG_PRE_DIV_DIGITAL_PRE_PLL_SELECT_MASK,
-	.pll_select_shift =
-		ROOT_CLK_MGR_REG_DIG_PRE_DIV_DIGITAL_PRE_PLL_SELECT_SHIFT,
+		.div_offset = ROOT_CLK_MGR_REG_DIG1_DIV_OFFSET,
+		.div_mask = ROOT_CLK_MGR_REG_DIG1_DIV_DIGITAL_CH1_DIV_MASK,
+		.div_shift = ROOT_CLK_MGR_REG_DIG1_DIV_DIGITAL_CH1_DIV_SHIFT,
+		.div_trig_offset = ROOT_CLK_MGR_REG_DIG_TRG_OFFSET,
+		.div_trig_mask =
+			ROOT_CLK_MGR_REG_DIG_TRG_DIGITAL_CH1_TRIGGER_MASK,
+		.prediv_trig_offset = ROOT_CLK_MGR_REG_DIG_TRG_OFFSET,
+		.prediv_trig_mask =
+			ROOT_CLK_MGR_REG_DIG_TRG_DIGITAL_PRE_TRIGGER_MASK,
 	},
-	.src_clk = {
-	    .count = ARRAY_SIZE(dig_ch_peri_clk_src_list),
+	.src = {
+	    .count = ARRAY_SIZE(dig_chnl_clk_src_list),
 	    .src_inx = 0,
-	    .clk = dig_ch_peri_clk_src_list,
+	    .list = dig_chnl_clk_src_list,
 	},
 };
 
@@ -1306,26 +1349,20 @@ static struct peri_clk CLK_NAME(dig_ch2) = {
 		ROOT_CLK_MGR_REG_DIG_CLKGATE_DIGITAL_CH2_HW_SW_GATING_SEL_MASK,
 	.stprsts_mask = ROOT_CLK_MGR_REG_DIG_CLKGATE_DIGITAL_CH2_STPRSTS_MASK,
 	.clk_div = {
-	.div_offset = ROOT_CLK_MGR_REG_DIG2_DIV_OFFSET,
-	.div_mask = ROOT_CLK_MGR_REG_DIG2_DIV_DIGITAL_CH2_DIV_MASK,
-	.div_shift = ROOT_CLK_MGR_REG_DIG2_DIV_DIGITAL_CH2_DIV_SHIFT,
-	.pre_div_offset = ROOT_CLK_MGR_REG_DIG_PRE_DIV_OFFSET,
-	.pre_div_mask = ROOT_CLK_MGR_REG_DIG_PRE_DIV_DIGITAL_PRE_DIV_MASK,
-	.pre_div_shift = ROOT_CLK_MGR_REG_DIG_PRE_DIV_DIGITAL_PRE_DIV_SHIFT,
-	.div_trig_offset = ROOT_CLK_MGR_REG_DIG_TRG_OFFSET,
-	.div_trig_mask = ROOT_CLK_MGR_REG_DIG_TRG_DIGITAL_CH2_TRIGGER_MASK,
-	.prediv_trig_offset = ROOT_CLK_MGR_REG_DIG_TRG_OFFSET,
-	.prediv_trig_mask = ROOT_CLK_MGR_REG_DIG_TRG_DIGITAL_PRE_TRIGGER_MASK,
-	.pll_select_offset = ROOT_CLK_MGR_REG_DIG_PRE_DIV_OFFSET,
-	.pll_select_mask =
-		ROOT_CLK_MGR_REG_DIG_PRE_DIV_DIGITAL_PRE_PLL_SELECT_MASK,
-	.pll_select_shift =
-		ROOT_CLK_MGR_REG_DIG_PRE_DIV_DIGITAL_PRE_PLL_SELECT_SHIFT,
+		.div_offset = ROOT_CLK_MGR_REG_DIG2_DIV_OFFSET,
+		.div_mask = ROOT_CLK_MGR_REG_DIG2_DIV_DIGITAL_CH2_DIV_MASK,
+		.div_shift = ROOT_CLK_MGR_REG_DIG2_DIV_DIGITAL_CH2_DIV_SHIFT,
+		.div_trig_offset = ROOT_CLK_MGR_REG_DIG_TRG_OFFSET,
+		.div_trig_mask =
+			ROOT_CLK_MGR_REG_DIG_TRG_DIGITAL_CH2_TRIGGER_MASK,
+		.prediv_trig_offset = ROOT_CLK_MGR_REG_DIG_TRG_OFFSET,
+		.prediv_trig_mask =
+			ROOT_CLK_MGR_REG_DIG_TRG_DIGITAL_PRE_TRIGGER_MASK,
 	},
-	.src_clk = {
-	    .count = ARRAY_SIZE(dig_ch_peri_clk_src_list),
+	.src = {
+	    .count = ARRAY_SIZE(dig_chnl_clk_src_list),
 	    .src_inx = 0,
-	    .clk = dig_ch_peri_clk_src_list,
+	    .list = dig_chnl_clk_src_list,
 	},
 };
 
@@ -1349,21 +1386,15 @@ static struct peri_clk CLK_NAME(dig_ch3) = {
 		.div_offset = ROOT_CLK_MGR_REG_DIG3_DIV_OFFSET,
 		.div_mask = ROOT_CLK_MGR_REG_DIG3_DIV_DIGITAL_CH3_DIV_MASK,
 		.div_shift = ROOT_CLK_MGR_REG_DIG3_DIV_DIGITAL_CH3_DIV_SHIFT,
-		.pre_div_offset = ROOT_CLK_MGR_REG_DIG_PRE_DIV_OFFSET,
-		.pre_div_mask = ROOT_CLK_MGR_REG_DIG_PRE_DIV_DIGITAL_PRE_DIV_MASK,
-		.pre_div_shift = ROOT_CLK_MGR_REG_DIG_PRE_DIV_DIGITAL_PRE_DIV_SHIFT,
 		.div_trig_offset= ROOT_CLK_MGR_REG_DIG_TRG_OFFSET,
 		.div_trig_mask= ROOT_CLK_MGR_REG_DIG_TRG_DIGITAL_CH3_TRIGGER_MASK,
 		.prediv_trig_offset = ROOT_CLK_MGR_REG_DIG_TRG_OFFSET,
 		.prediv_trig_mask = ROOT_CLK_MGR_REG_DIG_TRG_DIGITAL_PRE_TRIGGER_MASK,
-		.pll_select_offset= ROOT_CLK_MGR_REG_DIG_PRE_DIV_OFFSET,
-		.pll_select_mask= ROOT_CLK_MGR_REG_DIG_PRE_DIV_DIGITAL_PRE_PLL_SELECT_MASK,
-		.pll_select_shift= ROOT_CLK_MGR_REG_DIG_PRE_DIV_DIGITAL_PRE_PLL_SELECT_SHIFT
 	},
-	.src_clk = {
-	    .count = ARRAY_SIZE(dig_ch_peri_clk_src_list),
+	.src = {
+	    .count = ARRAY_SIZE(dig_chnl_clk_src_list),
 	    .src_inx = 0,
-	    .clk = dig_ch_peri_clk_src_list,
+	    .list = dig_chnl_clk_src_list,
 	},
 };
 
@@ -1404,10 +1435,11 @@ static struct ccu_clk CLK_NAME(khub) = {
 	.lvm0_3_offset = KHUB_CLK_MGR_REG_LVM0_3_OFFSET,
 	.vlt0_3_offset = KHUB_CLK_MGR_REG_VLT0_3_OFFSET,
 	.vlt4_7_offset = KHUB_CLK_MGR_REG_VLT4_7_OFFSET,
-#ifdef CONFIG_DEBUG_FS
+
 	.policy_dbg_offset = KHUB_CLK_MGR_REG_POLICY_DBG_OFFSET,
 	.policy_dbg_act_freq_shift = KHUB_CLK_MGR_REG_POLICY_DBG_ACT_FREQ_SHIFT,
 	.policy_dbg_act_policy_shift = KHUB_CLK_MGR_REG_POLICY_DBG_ACT_POLICY_SHIFT,
+#ifdef CONFIG_DEBUG_FS
 	.clk_mon_offset = KHUB_CLK_MGR_REG_CLKMON_OFFSET,
 #endif
 	.freq_volt = HUB_CCU_FREQ_VOLT_TBL,
@@ -1415,6 +1447,7 @@ static struct ccu_clk CLK_NAME(khub) = {
 	.volt_peri = DEFINE_ARRAY_ARGS(VLT_NORMAL_PERI,VLT_HIGH_PERI),
 	.freq_policy = HUB_CCU_FREQ_POLICY_TBL,
 	.freq_tbl = DEFINE_ARRAY_ARGS(khub_clk_freq_list0,khub_clk_freq_list1,khub_clk_freq_list2,khub_clk_freq_list3,khub_clk_freq_list4,khub_clk_freq_list5,khub_clk_freq_list6),
+	.freq_tbl_size = 7,
 	.ccu_reset_mgr_base = HW_IO_PHYS_TO_VIRT(HUB_RST_BASE_ADDR),
 	.reset_wr_access_offset = KHUB_RST_MGR_REG_WR_ACCESS_OFFSET,
 	.dbg_bus_offset = KHUB_CLK_MGR_REG_CLK_DEBUG_BUS_OFFSET,
@@ -1948,8 +1981,10 @@ static struct bus_clk CLK_NAME(atb_filter_apb) = {
 Peri clock name AUDIOH_26M
 */
 /*peri clk src list*/
-static struct clk *audioh_26m_peri_clk_src_list[] =
-		DEFINE_ARRAY_ARGS(CLK_PTR(crystal), CLK_PTR(ref_26m));
+static struct clock_source audioh_26m_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(ref_26m, 1),
+};
+
 static struct peri_clk CLK_NAME(audioh_26m) = {
 
 	.clk =	{
@@ -1986,11 +2021,12 @@ static struct peri_clk CLK_NAME(audioh_26m) = {
 			KHUB_CLK_MGR_REG_AUDIOH_DIV_AUDIOH_26M_PLL_SELECT_MASK,
 		.pll_select_shift =
 		KHUB_CLK_MGR_REG_AUDIOH_DIV_AUDIOH_26M_PLL_SELECT_SHIFT,
+		.pll_select_offset = KHUB_CLK_MGR_REG_AUDIOH_DIV_OFFSET,
 	},
-	.src_clk = {
-					.count = ARRAY_SIZE(audioh_26m_peri_clk_src_list),
-					.src_inx = 0,
-					.clk = audioh_26m_peri_clk_src_list,
+	.src = {
+			.count = ARRAY_SIZE(audioh_26m_peri_clk_src_list),
+			.src_inx = 0,
+			.list = audioh_26m_peri_clk_src_list,
 				},
 	.soft_reset_offset	= KHUB_RST_MGR_REG_SOFT_RSTN1_OFFSET,
 	.clk_reset_mask		= KHUB_RST_MGR_REG_SOFT_RSTN1_AUDIOH_SOFT_RSTN_MASK,
@@ -2001,8 +2037,10 @@ static struct peri_clk CLK_NAME(audioh_26m) = {
 Peri clock name HUB
 */
 /*peri clk src list*/
-static struct clk *hub_peri_clk_src_list[] =
-	DEFINE_ARRAY_ARGS(CLK_PTR(crystal), CLK_PTR(var_312m));
+static struct clock_source hub_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(var_312m, 1),
+};
+
 static struct peri_clk CLK_NAME(hub_clk) = {
     .clk =	{
 	.flags = HUB_PERI_CLK_FLAGS,
@@ -2035,11 +2073,11 @@ static struct peri_clk CLK_NAME(hub_clk) = {
 	.pll_select_mask= KHUB_CLK_MGR_REG_HUB_DIV_HUB_PLL_SELECT_MASK,
 	.pll_select_shift= KHUB_CLK_MGR_REG_HUB_DIV_HUB_PLL_SELECT_SHIFT,
     },
-    .src_clk = {
-	.count = ARRAY_SIZE(hub_peri_clk_src_list),
-	.src_inx = 1,
-	.clk = hub_peri_clk_src_list,
-    },
+	.src = {
+		.count = ARRAY_SIZE(hub_peri_clk_src_list),
+		.src_inx = 1,
+		.list = hub_peri_clk_src_list,
+	},
     .soft_reset_offset	= KHUB_RST_MGR_REG_SOFT_RSTN0_OFFSET,
     .clk_reset_mask	= KHUB_RST_MGR_REG_SOFT_RSTN0_HUB_SOFT_RSTN_MASK,
 };
@@ -2243,8 +2281,10 @@ Peri clock name NOR_ASYNC
 /*peri clk src list*/
 /* default value of nor_var_clk is 52M, so using ref_52M clk for source for now
  * as nor_var_clk is not defined*/
-static struct clk *nor_async_peri_clk_src_list[] =
-			DEFINE_ARRAY_ARGS(CLK_PTR(crystal), CLK_PTR(ref_52m));
+static struct clock_source nor_async_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(ref_52m, 1),
+};
+
 static struct peri_clk clk_nor_async = {
 	.clk =	{
 		.flags = NOR_ASYNC_PERI_CLK_FLAGS,
@@ -2264,10 +2304,10 @@ static struct peri_clk clk_nor_async = {
 	.hyst_en_mask = KHUB_CLK_MGR_REG_NOR_CLKGATE_NOR_ASYNC_HYST_EN_MASK,
 	.stprsts_mask = KHUB_CLK_MGR_REG_NOR_CLKGATE_NOR_ASYNC_STPRSTS_MASK,
 
-	.src_clk = {
+	.src = {
 		.count = ARRAY_SIZE(nor_async_peri_clk_src_list),
 		.src_inx = 1,
-		.clk = nor_async_peri_clk_src_list,
+		.list = nor_async_peri_clk_src_list,
 	},
 };
 
@@ -2276,8 +2316,10 @@ static struct peri_clk clk_nor_async = {
 Peri clock name AUDIOH_2P4M
 */
 /*peri clk src list*/
-static struct clk *audioh_2p4m_peri_clk_src_list[] =
-		DEFINE_ARRAY_ARGS(CLK_PTR(crystal), CLK_PTR(ref_312m));
+static struct clock_source audioh_2p4m_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(ref_312m, 1),
+};
+
 static struct peri_clk CLK_NAME(audioh_2p4m) = {
 
 	.clk =	{
@@ -2306,10 +2348,10 @@ static struct peri_clk CLK_NAME(audioh_2p4m) = {
 	.volt_lvl_mask =
 		KHUB_CLK_MGR_REG_AUDIOH_CLKGATE_AUDIOH_VOLTAGE_LEVEL_MASK,
 
-	.src_clk = {
+	.src = {
 			.count = ARRAY_SIZE(audioh_2p4m_peri_clk_src_list),
 			.src_inx = 0,
-			.clk = audioh_2p4m_peri_clk_src_list,
+			.list = audioh_2p4m_peri_clk_src_list,
 		},
 	.soft_reset_offset = KHUB_RST_MGR_REG_SOFT_RSTN1_OFFSET,
 	.clk_reset_mask =
@@ -2320,8 +2362,10 @@ static struct peri_clk CLK_NAME(audioh_2p4m) = {
 Peri clock name AUDIOH_156M
 */
 /*peri clk src list*/
-static struct clk *audioh_156m_peri_clk_src_list[] =
-		DEFINE_ARRAY_ARGS(CLK_PTR(crystal), CLK_PTR(ref_312m));
+static struct clock_source audioh_156m_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(ref_312m, 1),
+};
+
 static struct peri_clk CLK_NAME(audioh_156m) = {
 
 	.clk =	{
@@ -2351,10 +2395,10 @@ static struct peri_clk CLK_NAME(audioh_156m) = {
 	.volt_lvl_mask =
 		KHUB_CLK_MGR_REG_AUDIOH_CLKGATE_AUDIOH_VOLTAGE_LEVEL_MASK,
 
-	.src_clk = {
+	.src = {
 			.count = ARRAY_SIZE(audioh_156m_peri_clk_src_list),
 			.src_inx = 0,
-			.clk = audioh_156m_peri_clk_src_list,
+			.list = audioh_156m_peri_clk_src_list,
 		},
 	.soft_reset_offset = KHUB_RST_MGR_REG_SOFT_RSTN1_OFFSET,
 	.clk_reset_mask	= KHUB_RST_MGR_REG_SOFT_RSTN1_AUDIOH_SOFT_RSTN_MASK,
@@ -2364,9 +2408,11 @@ static struct peri_clk CLK_NAME(audioh_156m) = {
 Peri clock name SSP3_AUDIO
 */
 /*peri clk src list*/
-static struct clk *ssp3_audio_peri_clk_src_list[] =
-	DEFINE_ARRAY_ARGS(CLK_PTR(crystal), CLK_PTR(ref_312m),
-		CLK_PTR(ref_cx40));
+static struct clock_source ssp3_audio_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(ref_312m, 1),
+	INIT_SRC_CLK(ref_cx40, 2),
+};
+
 static struct peri_clk CLK_NAME(ssp3_audio) = {
 
 	.clk =	{
@@ -2417,10 +2463,10 @@ static struct peri_clk CLK_NAME(ssp3_audio) = {
 	.pll_select_shift =
 	KHUB_CLK_MGR_REG_SSP3_AUDIO_DIV_SSP3_AUDIO_PRE_PLL_SELECT_SHIFT,
 	},
-	.src_clk = {
+	.src = {
 		.count = ARRAY_SIZE(ssp3_audio_peri_clk_src_list),
 		.src_inx = 0,
-		.clk = ssp3_audio_peri_clk_src_list,
+		.list = ssp3_audio_peri_clk_src_list,
 	},
 };
 
@@ -2428,9 +2474,12 @@ static struct peri_clk CLK_NAME(ssp3_audio) = {
 Peri clock name SSP3
 */
 /*peri clk src list*/
-static struct clk *ssp3_peri_clk_src_list[] =
-	DEFINE_ARRAY_ARGS(CLK_PTR(crystal), CLK_PTR(var_312m),
-		CLK_PTR(ref_312m), CLK_PTR(ref_96m), CLK_PTR(var_96m));
+static struct clock_source ssp3_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(var_312m, 1),
+	INIT_SRC_CLK(ref_312m, 2), INIT_SRC_CLK(ref_96m, 3),
+	INIT_SRC_CLK(var_96m, 4),
+};
+
 static struct peri_clk CLK_NAME(ssp3) = {
 
 	.clk =	{
@@ -2465,10 +2514,10 @@ static struct peri_clk CLK_NAME(ssp3) = {
 					.pll_select_mask= KHUB_CLK_MGR_REG_SSP3_DIV_SSP3_PRE_PLL_SELECT_MASK,
 					.pll_select_shift= KHUB_CLK_MGR_REG_SSP3_DIV_SSP3_PRE_PLL_SELECT_SHIFT,
 				},
-	.src_clk = {
+	.src = {
 					.count = ARRAY_SIZE(ssp3_peri_clk_src_list),
 					.src_inx = 0,
-					.clk = ssp3_peri_clk_src_list,
+					.list = ssp3_peri_clk_src_list,
 				},
 	.soft_reset_offset	= KHUB_RST_MGR_REG_SOFT_RSTN1_OFFSET,
 	.clk_reset_mask		= KHUB_RST_MGR_REG_SOFT_RSTN1_SSP3_SOFT_RSTN_MASK,
@@ -2478,7 +2527,11 @@ static struct peri_clk CLK_NAME(ssp3) = {
 Peri clock name SSP4_AUDIO
 */
 /*peri clk src list*/
-static struct clk* ssp4_audio_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(crystal),CLK_PTR(ref_312m),CLK_PTR(ref_cx40));
+static struct clock_source ssp4_audio_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(ref_312m, 1),
+	INIT_SRC_CLK(ref_cx40, 2),
+};
+
 static struct peri_clk CLK_NAME(ssp4_audio) = {
 
 	.clk =	{
@@ -2515,10 +2568,10 @@ static struct peri_clk CLK_NAME(ssp4_audio) = {
 					.pll_select_mask= KHUB_CLK_MGR_REG_SSP4_AUDIO_DIV_SSP4_AUDIO_PRE_PLL_SELECT_MASK,
 					.pll_select_shift= KHUB_CLK_MGR_REG_SSP4_AUDIO_DIV_SSP4_AUDIO_PRE_PLL_SELECT_SHIFT,
 				},
-	.src_clk = {
+	.src = {
 					.count = ARRAY_SIZE(ssp4_audio_peri_clk_src_list),
 					.src_inx = 0,
-					.clk = ssp4_audio_peri_clk_src_list,
+					.list = ssp4_audio_peri_clk_src_list,
 				},
 };
 
@@ -2526,9 +2579,12 @@ static struct peri_clk CLK_NAME(ssp4_audio) = {
 Peri clock name SSP4
 */
 /*peri clk src list*/
-static struct clk *ssp4_peri_clk_src_list[] =
-	DEFINE_ARRAY_ARGS(CLK_PTR(crystal), CLK_PTR(var_312m),
-		CLK_PTR(ref_312m), CLK_PTR(ref_96m), CLK_PTR(var_96m));
+static struct clock_source ssp4_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(var_312m, 1),
+	INIT_SRC_CLK(ref_312m, 2), INIT_SRC_CLK(ref_96m, 3),
+	INIT_SRC_CLK(var_96m, 4),
+};
+
 static struct peri_clk CLK_NAME(ssp4) = {
 
 	.clk =	{
@@ -2569,10 +2625,10 @@ static struct peri_clk CLK_NAME(ssp4) = {
 		.pll_select_shift =
 			KHUB_CLK_MGR_REG_SSP4_DIV_SSP4_PRE_PLL_SELECT_SHIFT,
 	},
-	.src_clk = {
+	.src = {
 			.count = ARRAY_SIZE(ssp4_peri_clk_src_list),
 			.src_inx = 0,
-			.clk = ssp4_peri_clk_src_list,
+			.list = ssp4_peri_clk_src_list,
 		},
 	.soft_reset_offset = KHUB_RST_MGR_REG_SOFT_RSTN1_OFFSET,
 	.clk_reset_mask	= KHUB_RST_MGR_REG_SOFT_RSTN1_SSP4_SOFT_RSTN_MASK,
@@ -2582,7 +2638,10 @@ static struct peri_clk CLK_NAME(ssp4) = {
 Peri clock name TMON_1M
 */
 /*peri clk src list*/
-static struct clk* tmon_1m_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(frac_1m),CLK_PTR(dft_19_5m));
+static struct clock_source tmon_1m_peri_clk_src_list[] = {
+	INIT_SRC_CLK(frac_1m, 0), INIT_SRC_CLK(dft_19_5m, 1),
+};
+
 static struct peri_clk CLK_NAME(tmon_1m) = {
 
 	.clk =	{
@@ -2609,10 +2668,10 @@ static struct peri_clk CLK_NAME(tmon_1m) = {
 					.pll_select_mask= KHUB_CLK_MGR_REG_TMON_DIV_DBG_TMON_1M_PLL_SELECT_MASK,
 					.pll_select_shift= KHUB_CLK_MGR_REG_TMON_DIV_DBG_TMON_1M_PLL_SELECT_SHIFT,
 				},
-	.src_clk = {
+	.src = {
 					.count = ARRAY_SIZE(tmon_1m_peri_clk_src_list),
 					.src_inx = 0,
-					.clk = tmon_1m_peri_clk_src_list,
+					.list = tmon_1m_peri_clk_src_list,
 				},
 	.soft_reset_offset	= KHUB_RST_MGR_REG_SOFT_RSTN1_OFFSET,
 	.clk_reset_mask		= KHUB_RST_MGR_REG_SOFT_RSTN1_TMON_SOFT_RSTN_MASK,
@@ -2650,7 +2709,10 @@ static struct peri_clk CLK_NAME(dap_switch) = {
 Peri clock name BROM
 */
 /*peri clk src list*/
-static struct clk* brom_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(hub_clk));
+static struct clock_source brom_peri_clk_src_list[] = {
+	INIT_SRC_CLK(hub_clk, 0),
+};
+
 static struct peri_clk CLK_NAME(brom) = {
 
 	.clk =	{
@@ -2678,10 +2740,10 @@ static struct peri_clk CLK_NAME(brom) = {
 		.div_mask = KHUB_CLK_MGR_REG_HUB_DIV_BROM_DIV_MASK,
 		.div_shift = KHUB_CLK_MGR_REG_HUB_DIV_BROM_DIV_SHIFT,
 	},
-	.src_clk = {
+	.src = {
 		.count = ARRAY_SIZE(brom_peri_clk_src_list),
 		.src_inx = 0,
-		.clk = brom_peri_clk_src_list,
+		.list = brom_peri_clk_src_list,
 	},
 	.soft_reset_offset	= KHUB_RST_MGR_REG_SOFT_RSTN0_OFFSET,
 	.clk_reset_mask		= KHUB_RST_MGR_REG_SOFT_RSTN0_BROM_SOFT_RSTN_MASK,
@@ -2691,7 +2753,10 @@ static struct peri_clk CLK_NAME(brom) = {
 Peri clock name MDIOMASTER
 */
 /*peri clk src list*/
-static struct clk* mdiomaster_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(crystal));
+static struct clock_source mdiomaster_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0),
+};
+
 static struct peri_clk CLK_NAME(mdiomaster) = {
 
 	.clk =	{
@@ -2714,10 +2779,10 @@ static struct peri_clk CLK_NAME(mdiomaster) = {
 	.hyst_en_mask = KHUB_CLK_MGR_REG_MDIO_CLKGATE_MDIOMASTER_HYST_EN_MASK,
 	.stprsts_mask = KHUB_CLK_MGR_REG_MDIO_CLKGATE_MDIOMASTER_STPRSTS_MASK,
 	.volt_lvl_mask =KHUB_CLK_MGR_REG_MDIO_CLKGATE_MDIOMASTER_VOLTAGE_LEVEL_MASK,
-	.src_clk = {
+	.src = {
 		.count = ARRAY_SIZE(mdiomaster_peri_clk_src_list),
 		.src_inx = 0,
-		.clk = mdiomaster_peri_clk_src_list,
+		.list = mdiomaster_peri_clk_src_list,
 	},
 	.soft_reset_offset	= KHUB_RST_MGR_REG_SOFT_RSTN1_OFFSET,
 	.clk_reset_mask		= KHUB_RST_MGR_REG_SOFT_RSTN1_MDIOMASTER_SOFT_RSTN_MASK,
@@ -2758,10 +2823,11 @@ static struct ccu_clk CLK_NAME(khubaon) = {
 	.lvm0_3_offset = KHUBAON_CLK_MGR_REG_LVM0_3_OFFSET,
 	.vlt0_3_offset = KHUBAON_CLK_MGR_REG_VLT0_3_OFFSET,
 	.vlt4_7_offset = KHUBAON_CLK_MGR_REG_VLT4_7_OFFSET,
-#ifdef CONFIG_DEBUG_FS
+
 	.policy_dbg_offset = KHUBAON_CLK_MGR_REG_POLICY_DBG_OFFSET,
 	.policy_dbg_act_freq_shift = KHUBAON_CLK_MGR_REG_POLICY_DBG_ACT_FREQ_SHIFT,
 	.policy_dbg_act_policy_shift = KHUBAON_CLK_MGR_REG_POLICY_DBG_ACT_POLICY_SHIFT,
+#ifdef CONFIG_DEBUG_FS
 	.clk_mon_offset = KHUBAON_CLK_MGR_REG_CLKMON_OFFSET,
 #endif
 	.freq_volt = AON_CCU_FREQ_VOLT_TBL,
@@ -2769,6 +2835,7 @@ static struct ccu_clk CLK_NAME(khubaon) = {
 	.volt_peri = DEFINE_ARRAY_ARGS(VLT_NORMAL_PERI,VLT_HIGH_PERI),
 	.freq_policy = AON_CCU_FREQ_POLICY_TBL,
 	.freq_tbl = DEFINE_ARRAY_ARGS(khubaon_clk_freq_list0,khubaon_clk_freq_list1,khubaon_clk_freq_list2,khubaon_clk_freq_list3,khubaon_clk_freq_list4),
+	.freq_tbl_size = 5,
 	.ccu_reset_mgr_base = HW_IO_PHYS_TO_VIRT(AON_RST_BASE_ADDR),
 	.reset_wr_access_offset = KHUBAON_RST_MGR_REG_WR_ACCESS_OFFSET,
 
@@ -2777,7 +2844,10 @@ static struct ccu_clk CLK_NAME(khubaon) = {
 /*
 Ref clock name PMU_BSC_VAR
 */
-static struct clk* pmu_bsc_var_ref_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(var_312m),CLK_PTR(ref_312m));
+static struct clock_source pmu_bsc_var_ref_clk_src_list[] = {
+	INIT_SRC_CLK(var_312m, 0), INIT_SRC_CLK(ref_312m, 1),
+};
+
 static struct ref_clk CLK_NAME(pmu_bsc_var) = {
     .clk =	{
 	.flags = PMU_BSC_VAR_REF_CLK_FLAGS,
@@ -2801,7 +2871,7 @@ static struct ref_clk CLK_NAME(pmu_bsc_var) = {
     .src_clk = {
 	.count = ARRAY_SIZE(pmu_bsc_var_ref_clk_src_list),
 	.src_inx = 0,
-	.clk = pmu_bsc_var_ref_clk_src_list,
+	.list = pmu_bsc_var_ref_clk_src_list,
     },
 };
 
@@ -3317,7 +3387,12 @@ static struct bus_clk CLK_NAME(dap) = {
 Peri clock name SIM
 */
 /*peri clk src list*/
-static struct clk* sim_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(crystal),CLK_PTR(var_312m),CLK_PTR(ref_312m),CLK_PTR(ref_96m),CLK_PTR(var_96m));
+static struct clock_source sim_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(var_312m, 1),
+	INIT_SRC_CLK(ref_312m, 2), INIT_SRC_CLK(ref_96m, 3),
+	INIT_SRC_CLK(var_96m, 4),
+};
+
 static struct peri_clk CLK_NAME(sim) = {
 
 	.clk =	{
@@ -3352,10 +3427,10 @@ static struct peri_clk CLK_NAME(sim) = {
 					.pll_select_mask= KHUBAON_CLK_MGR_REG_SIM_DIV_SIM_PRE_PLL_SELECT_MASK,
 					.pll_select_shift= KHUBAON_CLK_MGR_REG_SIM_DIV_SIM_PRE_PLL_SELECT_SHIFT,
 				},
-	.src_clk = {
+	.src = {
 					.count = ARRAY_SIZE(sim_peri_clk_src_list),
 					.src_inx = 0,
-					.clk = sim_peri_clk_src_list,
+					.list = sim_peri_clk_src_list,
 				},
 	.soft_reset_offset	= KHUBAON_RST_MGR_REG_SOFT_RSTN0_OFFSET,
 	.clk_reset_mask		= KHUBAON_RST_MGR_REG_SOFT_RSTN0_SIM_SOFT_RSTN_MASK,
@@ -3365,7 +3440,12 @@ static struct peri_clk CLK_NAME(sim) = {
 Peri clock name SIM2
 */
 /*peri clk src list*/
-static struct clk* sim2_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(crystal),CLK_PTR(var_312m),CLK_PTR(ref_312m),CLK_PTR(ref_96m),CLK_PTR(var_96m));
+static struct clock_source sim2_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(var_312m, 1),
+	INIT_SRC_CLK(ref_312m, 2), INIT_SRC_CLK(ref_96m, 3),
+	INIT_SRC_CLK(var_96m, 4),
+};
+
 static struct peri_clk CLK_NAME(sim2) = {
 
 	.clk =	{
@@ -3400,10 +3480,10 @@ static struct peri_clk CLK_NAME(sim2) = {
 					.pll_select_mask= KHUBAON_CLK_MGR_REG_SIM2_DIV_SIM2_PRE_PLL_SELECT_MASK,
 					.pll_select_shift= KHUBAON_CLK_MGR_REG_SIM2_DIV_SIM2_PRE_PLL_SELECT_SHIFT,
 				},
-	.src_clk = {
+	.src = {
 					.count = ARRAY_SIZE(sim2_peri_clk_src_list),
 					.src_inx = 0,
-					.clk = sim2_peri_clk_src_list,
+					.list = sim2_peri_clk_src_list,
 				},
 	.soft_reset_offset	= KHUBAON_RST_MGR_REG_SOFT_RSTN0_OFFSET,
 	.clk_reset_mask		= KHUBAON_RST_MGR_REG_SOFT_RSTN0_SIM2_SOFT_RSTN_MASK,
@@ -3413,7 +3493,11 @@ static struct peri_clk CLK_NAME(sim2) = {
 Peri clock name HUB_TIMER
 */
 /*peri clk src list*/
-static struct clk* hub_timer_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(bbl_32k),CLK_PTR(frac_1m),CLK_PTR(dft_19_5m));
+static struct clock_source hub_timer_peri_clk_src_list[] = {
+	INIT_SRC_CLK(bbl_32k, 0), INIT_SRC_CLK(frac_1m, 1),
+	INIT_SRC_CLK(dft_19_5m, 2),
+};
+
 static struct peri_clk CLK_NAME(hub_timer) = {
 
 	.clk =	{
@@ -3441,10 +3525,10 @@ static struct peri_clk CLK_NAME(hub_timer) = {
 					.pll_select_mask= KHUBAON_CLK_MGR_REG_HUB_TIMER_DIV_HUB_TIMER_PLL_SELECT_MASK,
 					.pll_select_shift= KHUBAON_CLK_MGR_REG_HUB_TIMER_DIV_HUB_TIMER_PLL_SELECT_SHIFT,
 				},
-	.src_clk = {
+	.src = {
 					.count = ARRAY_SIZE(hub_timer_peri_clk_src_list),
 					.src_inx = 0,
-					.clk = hub_timer_peri_clk_src_list,
+					.list = hub_timer_peri_clk_src_list,
 				},
 	.soft_reset_offset	= KHUBAON_RST_MGR_REG_SOFT_RSTN0_OFFSET,
 	.clk_reset_mask		= KHUBAON_RST_MGR_REG_SOFT_RSTN0_HUB_TIMER_SOFT_RSTN_MASK,
@@ -3454,7 +3538,11 @@ static struct peri_clk CLK_NAME(hub_timer) = {
 Peri clock name PMU_BSC
 */
 /*peri clk src list*/
-static struct clk* pmu_bsc_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(crystal),CLK_PTR(pmu_bsc_var),CLK_PTR(bbl_32k));
+static struct clock_source pmu_bsc_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(pmu_bsc_var, 1),
+	INIT_SRC_CLK(bbl_32k, 2),
+};
+
 static struct peri_clk CLK_NAME(pmu_bsc) = {
     .clk =	{
 	.flags = PMU_BSC_PERI_CLK_FLAGS,
@@ -3486,11 +3574,11 @@ static struct peri_clk CLK_NAME(pmu_bsc) = {
 	.pll_select_mask= KHUBAON_CLK_MGR_REG_PMU_BSC_DIV_PMU_BSC_PLL_SELECT_MASK,
 	.pll_select_shift= KHUBAON_CLK_MGR_REG_PMU_BSC_DIV_PMU_BSC_PLL_SELECT_SHIFT,
     },
-    .src_clk = {
-	.count = ARRAY_SIZE(pmu_bsc_peri_clk_src_list),
-	.src_inx = 0,
-	.clk = pmu_bsc_peri_clk_src_list,
-    },
+	.src = {
+		.count = ARRAY_SIZE(pmu_bsc_peri_clk_src_list),
+		.src_inx = 0,
+		.list = pmu_bsc_peri_clk_src_list,
+	},
     .soft_reset_offset	= KHUBAON_RST_MGR_REG_SOFT_RSTN0_OFFSET,
     .clk_reset_mask	= KHUBAON_RST_MGR_REG_SOFT_RSTN0_PMU_BSC_SOFT_RSTN_MASK,
 };
@@ -3533,10 +3621,11 @@ static struct ccu_clk CLK_NAME(kpm) = {
 	.lvm0_3_offset = KPM_CLK_MGR_REG_LVM0_3_OFFSET,
 	.vlt0_3_offset = KPM_CLK_MGR_REG_VLT0_3_OFFSET,
 	.vlt4_7_offset = KPM_CLK_MGR_REG_VLT4_7_OFFSET,
-#ifdef CONFIG_DEBUG_FS
+
 	.policy_dbg_offset = KPM_CLK_MGR_REG_POLICY_DBG_OFFSET,
 	.policy_dbg_act_freq_shift = KPM_CLK_MGR_REG_POLICY_DBG_ACT_FREQ_SHIFT,
 	.policy_dbg_act_policy_shift = KPM_CLK_MGR_REG_POLICY_DBG_ACT_POLICY_SHIFT,
+#ifdef CONFIG_DEBUG_FS
 	.clk_mon_offset = KPM_CLK_MGR_REG_CLKMON_OFFSET,
 #endif
 	.freq_volt = KPM_CCU_FREQ_VOLT_TBL,
@@ -3544,6 +3633,7 @@ static struct ccu_clk CLK_NAME(kpm) = {
 	.volt_peri = DEFINE_ARRAY_ARGS(VLT_NORMAL_PERI,VLT_HIGH_PERI),
 	.freq_policy = KPM_CCU_FREQ_POLICY_TBL,
 	.freq_tbl = DEFINE_ARRAY_ARGS(kpm_clk_freq_list0,kpm_clk_freq_list1,kpm_clk_freq_list2,kpm_clk_freq_list3,kpm_clk_freq_list4,kpm_clk_freq_list5,kpm_clk_freq_list6,kpm_clk_freq_list7),
+	.freq_tbl_size = 8,
 	.ccu_reset_mgr_base = HW_IO_PHYS_TO_VIRT(KONA_MST_RST_BASE_ADDR),
 	.reset_wr_access_offset = KPM_RST_MGR_REG_WR_ACCESS_OFFSET,
 	.dbg_bus_offset = KPM_CLK_MGR_REG_CLK_DEBUG_BUS_OFFSET,
@@ -3911,7 +4001,11 @@ static struct clk_dfs sdio2_clk_dfs =
 Peri clock name SDIO2
 */
 /*peri clk src list*/
-static struct clk* sdio2_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(crystal),CLK_PTR(var_52m),CLK_PTR(ref_52m),CLK_PTR(var_96m),CLK_PTR(ref_96m));
+static struct clock_source sdio2_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(var_52m, 1),
+	INIT_SRC_CLK(ref_52m, 2), INIT_SRC_CLK(var_96m, 3),
+	INIT_SRC_CLK(ref_96m, 4),
+};
 
 static struct peri_clk CLK_NAME(sdio2) = {
 
@@ -3952,10 +4046,10 @@ static struct peri_clk CLK_NAME(sdio2) = {
 					.pll_select_mask= KPM_CLK_MGR_REG_SDIO2_DIV_SDIO2_PLL_SELECT_MASK,
 					.pll_select_shift= KPM_CLK_MGR_REG_SDIO2_DIV_SDIO2_PLL_SELECT_SHIFT,
 				},
-	.src_clk = {
+	.src = {
 					.count = ARRAY_SIZE(sdio2_peri_clk_src_list),
 					.src_inx = 0,
-					.clk = sdio2_peri_clk_src_list,
+					.list = sdio2_peri_clk_src_list,
 				},
     .soft_reset_offset	= KPM_RST_MGR_REG_AHB_MST_SOFTRST_OFFSET,
     .clk_reset_mask	= KPM_RST_MGR_REG_AHB_MST_SOFTRST_SDIO2_SOFT_RSTN_MASK,
@@ -3965,7 +4059,10 @@ static struct peri_clk CLK_NAME(sdio2) = {
 Peri clock name SDIO2_SLEEP
 */
 /*peri clk src list*/
-static struct clk* sdio2_sleep_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(ref_32k));
+static struct clock_source sdio2_sleep_peri_clk_src_list[] = {
+	INIT_SRC_CLK(ref_32k, 0),
+};
+
 static struct peri_clk CLK_NAME(sdio2_sleep) = {
 
 	.clk =	{
@@ -3983,10 +4080,10 @@ static struct peri_clk CLK_NAME(sdio2_sleep) = {
 	.clk_gate_offset = KPM_CLK_MGR_REG_SDIO2_CLKGATE_OFFSET,
 	.clk_en_mask = KPM_CLK_MGR_REG_SDIO2_CLKGATE_SDIO2_SLEEP_CLK_EN_MASK,
 	.stprsts_mask = KPM_CLK_MGR_REG_SDIO2_CLKGATE_SDIO2_SLEEP_STPRSTS_MASK,
-	.src_clk = {
+	.src = {
 		.count = ARRAY_SIZE(sdio2_sleep_peri_clk_src_list),
 		.src_inx = 0,
-		.clk = sdio2_sleep_peri_clk_src_list,
+		.list = sdio2_sleep_peri_clk_src_list,
 	},
 .volt_lvl_mask = KPM_CLK_MGR_REG_SDIO2_CLKGATE_SDIO2_VOLTAGE_LEVEL_MASK,
 };
@@ -4014,7 +4111,12 @@ static struct clk_dfs sdio3_clk_dfs =
 Peri clock name SDIO3
 */
 /*peri clk src list*/
-static struct clk* sdio3_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(crystal),CLK_PTR(var_52m),CLK_PTR(ref_52m),CLK_PTR(var_96m),CLK_PTR(ref_96m));
+static struct clock_source sdio3_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(var_52m, 1),
+	INIT_SRC_CLK(ref_52m, 2), INIT_SRC_CLK(var_96m, 3),
+	INIT_SRC_CLK(ref_96m, 4),
+};
+
 static struct peri_clk CLK_NAME(sdio3) = {
 
 	.clk =	{
@@ -4054,10 +4156,10 @@ static struct peri_clk CLK_NAME(sdio3) = {
 					.pll_select_mask= KPM_CLK_MGR_REG_SDIO3_DIV_SDIO3_PLL_SELECT_MASK,
 					.pll_select_shift= KPM_CLK_MGR_REG_SDIO3_DIV_SDIO3_PLL_SELECT_SHIFT,
 				},
-	.src_clk = {
+	.src = {
 					.count = ARRAY_SIZE(sdio3_peri_clk_src_list),
 					.src_inx = 0,
-					.clk = sdio3_peri_clk_src_list,
+					.list = sdio3_peri_clk_src_list,
 				},
     .soft_reset_offset	= KPM_RST_MGR_REG_AHB_MST_SOFTRST_OFFSET,
     .clk_reset_mask	= KPM_RST_MGR_REG_AHB_MST_SOFTRST_SDIO3_SOFT_RSTN_MASK,
@@ -4067,7 +4169,10 @@ static struct peri_clk CLK_NAME(sdio3) = {
 Peri clock name SDIO3_SLEEP
 */
 /*peri clk src list*/
-static struct clk* sdio3_sleep_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(ref_32k));
+static struct clock_source sdio3_sleep_peri_clk_src_list[] = {
+	INIT_SRC_CLK(ref_32k, 0),
+};
+
 static struct peri_clk CLK_NAME(sdio3_sleep) = {
 
 	.clk =	{
@@ -4085,10 +4190,10 @@ static struct peri_clk CLK_NAME(sdio3_sleep) = {
 	.clk_gate_offset = KPM_CLK_MGR_REG_SDIO3_CLKGATE_OFFSET,
 	.clk_en_mask = KPM_CLK_MGR_REG_SDIO3_CLKGATE_SDIO3_SLEEP_CLK_EN_MASK,
 	.stprsts_mask = KPM_CLK_MGR_REG_SDIO3_CLKGATE_SDIO3_SLEEP_STPRSTS_MASK,
-	.src_clk = {
+	.src = {
 		.count = ARRAY_SIZE(sdio3_sleep_peri_clk_src_list),
 		.src_inx = 0,
-		.clk = sdio3_sleep_peri_clk_src_list,
+		.list = sdio3_sleep_peri_clk_src_list,
 	},
 .volt_lvl_mask = KPM_CLK_MGR_REG_SDIO3_CLKGATE_SDIO3_VOLTAGE_LEVEL_MASK,
 };
@@ -4114,7 +4219,12 @@ static struct clk_dfs sdio1_clk_dfs =
 Peri clock name SDIO1
 */
 /*peri clk src list*/
-static struct clk* sdio1_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(crystal),CLK_PTR(var_52m),CLK_PTR(ref_52m),CLK_PTR(var_96m),CLK_PTR(ref_96m));
+static struct clock_source sdio1_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(var_52m, 1),
+	INIT_SRC_CLK(ref_52m, 2), INIT_SRC_CLK(var_96m, 3),
+	INIT_SRC_CLK(ref_96m, 4),
+};
+
 static struct peri_clk CLK_NAME(sdio1) = {
 
 	.clk =	{
@@ -4154,10 +4264,10 @@ static struct peri_clk CLK_NAME(sdio1) = {
 		.pll_select_mask= KPM_CLK_MGR_REG_SDIO1_DIV_SDIO1_PLL_SELECT_MASK,
 		.pll_select_shift= KPM_CLK_MGR_REG_SDIO1_DIV_SDIO1_PLL_SELECT_SHIFT,
 	},
-	.src_clk = {
+	.src = {
 		.count = ARRAY_SIZE(sdio1_peri_clk_src_list),
 		.src_inx = 0,
-		.clk = sdio1_peri_clk_src_list,
+		.list = sdio1_peri_clk_src_list,
 	},
     .soft_reset_offset	= KPM_RST_MGR_REG_AHB_MST_SOFTRST_OFFSET,
     .clk_reset_mask	= KPM_RST_MGR_REG_AHB_MST_SOFTRST_SDIO1_SOFT_RSTN_MASK,
@@ -4184,7 +4294,12 @@ static struct clk_dfs sdio4_clk_dfs =
 Peri clock name SDIO4
 */
 /*peri clk src list*/
-static struct clk* sdio4_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(crystal),CLK_PTR(var_52m),CLK_PTR(ref_52m),CLK_PTR(var_96m),CLK_PTR(ref_96m));
+static struct clock_source sdio4_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(var_52m, 1),
+	INIT_SRC_CLK(ref_52m, 2), INIT_SRC_CLK(var_96m, 3),
+	INIT_SRC_CLK(ref_96m, 4),
+};
+
 static struct peri_clk CLK_NAME(sdio4) = {
 	.clk =	{
 		.flags = SDIO4_PERI_CLK_FLAGS,
@@ -4221,10 +4336,10 @@ static struct peri_clk CLK_NAME(sdio4) = {
 		.pll_select_mask= KPM_CLK_MGR_REG_SDIO4_DIV_SDIO4_PLL_SELECT_MASK,
 		.pll_select_shift= KPM_CLK_MGR_REG_SDIO4_DIV_SDIO4_PLL_SELECT_SHIFT,
 	},
-	.src_clk = {
+	.src = {
 		.count = ARRAY_SIZE(sdio4_peri_clk_src_list),
 		.src_inx = 0,
-		.clk = sdio4_peri_clk_src_list,
+		.list = sdio4_peri_clk_src_list,
 	},
     .soft_reset_offset	= KPM_RST_MGR_REG_AHB_MST_SOFTRST_OFFSET,
     .clk_reset_mask	= KPM_RST_MGR_REG_AHB_MST_SOFTRST_SDIO4_SOFT_RSTN_MASK,
@@ -4233,7 +4348,10 @@ static struct peri_clk CLK_NAME(sdio4) = {
 /*
 Peri clock name SDIO1_SLEEP
 */
-static struct clk* sdio1_sleep_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(ref_32k));
+static struct clock_source sdio1_sleep_peri_clk_src_list[] = {
+	INIT_SRC_CLK(ref_32k, 0),
+};
+
 static struct peri_clk CLK_NAME(sdio1_sleep) = {
 
 	.clk =	{
@@ -4251,10 +4369,10 @@ static struct peri_clk CLK_NAME(sdio1_sleep) = {
 	.clk_gate_offset = KPM_CLK_MGR_REG_SDIO1_CLKGATE_OFFSET,
 	.clk_en_mask = KPM_CLK_MGR_REG_SDIO1_CLKGATE_SDIO1_SLEEP_CLK_EN_MASK,
 	.stprsts_mask = KPM_CLK_MGR_REG_SDIO1_CLKGATE_SDIO1_SLEEP_STPRSTS_MASK,
-	.src_clk = {
+	.src = {
 		.count = ARRAY_SIZE(sdio1_sleep_peri_clk_src_list),
 		.src_inx = 0,
-		.clk = sdio1_sleep_peri_clk_src_list,
+		.list = sdio1_sleep_peri_clk_src_list,
 	},
 .volt_lvl_mask = KPM_CLK_MGR_REG_SDIO1_CLKGATE_SDIO1_VOLTAGE_LEVEL_MASK,
 };
@@ -4263,7 +4381,10 @@ static struct peri_clk CLK_NAME(sdio1_sleep) = {
 /*
 Peri clock name SDIO4_SLEEP
 */
-static struct clk* sdio4_sleep_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(ref_32k));
+static struct clock_source sdio4_sleep_peri_clk_src_list[] = {
+	INIT_SRC_CLK(ref_32k, 0),
+};
+
 static struct peri_clk CLK_NAME(sdio4_sleep) = {
 	.clk =	{
 		.flags = SDIO4_SLEEP_PERI_CLK_FLAGS,
@@ -4280,10 +4401,10 @@ static struct peri_clk CLK_NAME(sdio4_sleep) = {
 	.clk_gate_offset = KPM_CLK_MGR_REG_SDIO4_CLKGATE_OFFSET,
 	.clk_en_mask = KPM_CLK_MGR_REG_SDIO4_CLKGATE_SDIO4_SLEEP_CLK_EN_MASK,
 	.stprsts_mask = KPM_CLK_MGR_REG_SDIO4_CLKGATE_SDIO4_SLEEP_STPRSTS_MASK,
-	.src_clk = {
+	.src = {
 		.count = ARRAY_SIZE(sdio4_sleep_peri_clk_src_list),
 		.src_inx = 0,
-		.clk = sdio4_sleep_peri_clk_src_list,
+		.list = sdio4_sleep_peri_clk_src_list,
 	},
 .volt_lvl_mask = KPM_CLK_MGR_REG_SDIO4_CLKGATE_SDIO4_VOLTAGE_LEVEL_MASK,
 };
@@ -4292,7 +4413,11 @@ static struct peri_clk CLK_NAME(sdio4_sleep) = {
 Peri clock name USB_IC
 */
 /*peri clk src list*/
-static struct clk* usb_ic_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(crystal),CLK_PTR(var_96m),CLK_PTR(ref_96m));
+static struct clock_source usb_ic_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(var_96m, 1),
+	INIT_SRC_CLK(ref_96m, 2),
+};
+
 static struct peri_clk CLK_NAME(usb_ic) = {
     .clk =	{
 	.flags = USB_IC_PERI_CLK_FLAGS,
@@ -4319,11 +4444,11 @@ static struct peri_clk CLK_NAME(usb_ic) = {
 	.pll_select_mask= KPM_CLK_MGR_REG_USB_IC_DIV_USB_IC_PLL_SELECT_MASK,
 	.pll_select_shift= KPM_CLK_MGR_REG_USB_IC_DIV_USB_IC_PLL_SELECT_SHIFT,
     },
-    .src_clk = {
-	.count = ARRAY_SIZE(usb_ic_peri_clk_src_list),
-	.src_inx = 2,
-	.clk = usb_ic_peri_clk_src_list,
-    },
+	.src = {
+		.count = ARRAY_SIZE(usb_ic_peri_clk_src_list),
+		.src_inx = 2,
+		.list = usb_ic_peri_clk_src_list,
+	},
 };
 
 
@@ -4331,7 +4456,11 @@ static struct peri_clk CLK_NAME(usb_ic) = {
 Peri clock name USBH_48M
 */
 /*peri clk src list*/
-static struct clk* usbh_48m_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(crystal),CLK_PTR(var_96m),CLK_PTR(ref_96m));
+static struct clock_source usbh_48m_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(var_96m, 1),
+	INIT_SRC_CLK(ref_96m, 2),
+};
+
 static struct peri_clk CLK_NAME(usbh_48m) = {
     .clk =	{
 	.flags = USBH_48M_PERI_CLK_FLAGS,
@@ -4360,11 +4489,11 @@ static struct peri_clk CLK_NAME(usbh_48m) = {
 	.pll_select_mask= KPM_CLK_MGR_REG_USB_EHCI_DIV_USBH_48M_PLL_SELECT_MASK,
 	.pll_select_shift= KPM_CLK_MGR_REG_USB_EHCI_DIV_USBH_48M_PLL_SELECT_SHIFT,
     },
-    .src_clk = {
-	.count = ARRAY_SIZE(usbh_48m_peri_clk_src_list),
-	.src_inx = 2,
-	.clk = usbh_48m_peri_clk_src_list,
-    },
+	.src = {
+		.count = ARRAY_SIZE(usbh_48m_peri_clk_src_list),
+		.src_inx = 2,
+		.list = usbh_48m_peri_clk_src_list,
+	},
     .soft_reset_offset	= KPM_RST_MGR_REG_AHB_MST_SOFTRST_OFFSET,
     .clk_reset_mask	= KPM_RST_MGR_REG_AHB_MST_SOFTRST_USBH_SOFT_RSTN_MASK,
 };
@@ -4373,7 +4502,11 @@ static struct peri_clk CLK_NAME(usbh_48m) = {
 Peri clock name USBH_12M
 */
 /*peri clk src list*/
-static struct clk* usbh_12m_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(crystal),CLK_PTR(var_96m),CLK_PTR(ref_96m));
+static struct clock_source usbh_12m_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(var_96m, 1),
+	INIT_SRC_CLK(ref_96m, 2),
+};
+
 static struct peri_clk CLK_NAME(usbh_12m) = {
     .clk =	{
 	.flags = USBH_12M_PERI_CLK_FLAGS,
@@ -4402,11 +4535,11 @@ static struct peri_clk CLK_NAME(usbh_12m) = {
 	.pll_select_mask= KPM_CLK_MGR_REG_USB_EHCI_DIV_USBH_48M_PLL_SELECT_MASK,
 	.pll_select_shift= KPM_CLK_MGR_REG_USB_EHCI_DIV_USBH_48M_PLL_SELECT_SHIFT,
     },
-    .src_clk = {
-	.count = ARRAY_SIZE(usbh_12m_peri_clk_src_list),
-	.src_inx = 2,
-	.clk = usbh_12m_peri_clk_src_list,
-    },
+	.src = {
+		.count = ARRAY_SIZE(usbh_12m_peri_clk_src_list),
+		.src_inx = 2,
+		.list = usbh_12m_peri_clk_src_list,
+	},
     .soft_reset_offset	= KPM_RST_MGR_REG_AHB_MST_SOFTRST_OFFSET,
     .clk_reset_mask	= KPM_RST_MGR_REG_AHB_MST_SOFTRST_USBH_SOFT_RSTN_MASK,
 };
@@ -4447,10 +4580,11 @@ static struct ccu_clk CLK_NAME(kps) = {
 	.lvm0_3_offset = KPS_CLK_MGR_REG_LVM0_3_OFFSET,
 	.vlt0_3_offset = KPS_CLK_MGR_REG_VLT0_3_OFFSET,
 	.vlt4_7_offset = KPS_CLK_MGR_REG_VLT4_7_OFFSET,
-#ifdef CONFIG_DEBUG_FS
+
 	.policy_dbg_offset = KPS_CLK_MGR_REG_POLICY_DBG_OFFSET,
 	.policy_dbg_act_freq_shift = KPS_CLK_MGR_REG_POLICY_DBG_ACT_FREQ_SHIFT,
 	.policy_dbg_act_policy_shift = KPS_CLK_MGR_REG_POLICY_DBG_ACT_POLICY_SHIFT,
+#ifdef CONFIG_DEBUG_FS
 	.clk_mon_offset = KPS_CLK_MGR_REG_CLKMON_OFFSET,
 #endif
 	.freq_volt = KPS_CCU_FREQ_VOLT_TBL,
@@ -4458,6 +4592,7 @@ static struct ccu_clk CLK_NAME(kps) = {
 	.volt_peri = DEFINE_ARRAY_ARGS(VLT_NORMAL_PERI,VLT_HIGH_PERI),
 	.freq_policy = KPS_CCU_FREQ_POLICY_TBL,
 	.freq_tbl = DEFINE_ARRAY_ARGS(kps_clk_freq_list0,kps_clk_freq_list1,kps_clk_freq_list2,kps_clk_freq_list3,kps_clk_freq_list4,kps_clk_freq_list5),
+	.freq_tbl_size = 6,
 	.ccu_reset_mgr_base = HW_IO_PHYS_TO_VIRT(KONA_SLV_RST_BASE_ADDR),
 	.reset_wr_access_offset = KPS_RST_MGR_REG_WR_ACCESS_OFFSET,
 	.dbg_bus_offset = KPS_CLK_MGR_REG_CLK_DEBUG_BUS_OFFSET,
@@ -4467,9 +4602,11 @@ static struct ccu_clk CLK_NAME(kps) = {
 /*
 Peri clock name CAPH_SRCMIXER
 */
-
 /*peri clk src list*/
-static struct clk* caph_srcmixer_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(crystal),CLK_PTR(ref_312m));
+static struct clock_source caph_srcmixer_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(ref_312m, 1),
+};
+
 static struct peri_clk CLK_NAME(caph_srcmixer) = {
 
 	.clk =	{
@@ -4501,10 +4638,10 @@ static struct peri_clk CLK_NAME(caph_srcmixer) = {
 					.pll_select_mask= KHUB_CLK_MGR_REG_CAPH_DIV_CAPH_SRCMIXER_PLL_SELECT_MASK,
 					.pll_select_shift= KHUB_CLK_MGR_REG_CAPH_DIV_CAPH_SRCMIXER_PLL_SELECT_SHIFT,
 				},
-	.src_clk = {
+	.src = {
 					.count = ARRAY_SIZE(caph_srcmixer_peri_clk_src_list),
 					.src_inx = 0,
-					.clk = caph_srcmixer_peri_clk_src_list,
+			.list = caph_srcmixer_peri_clk_src_list,
 				},
 };
 
@@ -5030,7 +5167,11 @@ static struct bus_clk CLK_NAME(spum_sec_axi) = {
 Peri clock name UARTB
 */
 /*peri clk src list*/
-static struct clk* uartb_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(crystal),CLK_PTR(var_156m),CLK_PTR(ref_156m));
+static struct clock_source uartb_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(var_156m, 1),
+	INIT_SRC_CLK(ref_156m, 2),
+};
+
 static struct peri_clk CLK_NAME(uartb) = {
 
 	.clk =	{
@@ -5061,10 +5202,10 @@ static struct peri_clk CLK_NAME(uartb) = {
 					.pll_select_mask= KPS_CLK_MGR_REG_UARTB_DIV_UARTB_PLL_SELECT_MASK,
 					.pll_select_shift= KPS_CLK_MGR_REG_UARTB_DIV_UARTB_PLL_SELECT_SHIFT,
 				},
-	.src_clk = {
+	.src = {
 					.count = ARRAY_SIZE(uartb_peri_clk_src_list),
 					.src_inx = 1,
-					.clk = uartb_peri_clk_src_list,
+					.list = uartb_peri_clk_src_list,
 				},
 	.soft_reset_offset	= KPS_RST_MGR_REG_APB1_SOFTRST_OFFSET,
 	.clk_reset_mask		= KPS_RST_MGR_REG_APB1_SOFTRST_UARTB_SOFT_RSTN_MASK,
@@ -5074,7 +5215,11 @@ static struct peri_clk CLK_NAME(uartb) = {
 Peri clock name UARTB2
 */
 /*peri clk src list*/
-static struct clk* uartb2_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(crystal),CLK_PTR(var_156m),CLK_PTR(ref_156m));
+static struct clock_source uartb2_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(var_156m, 1),
+	INIT_SRC_CLK(ref_156m, 2),
+};
+
 static struct peri_clk CLK_NAME(uartb2) = {
 
 	.clk =	{
@@ -5105,10 +5250,10 @@ static struct peri_clk CLK_NAME(uartb2) = {
 					.pll_select_mask= KPS_CLK_MGR_REG_UARTB2_DIV_UARTB2_PLL_SELECT_MASK,
 					.pll_select_shift= KPS_CLK_MGR_REG_UARTB2_DIV_UARTB2_PLL_SELECT_SHIFT,
 				},
-	.src_clk = {
+	.src = {
 					.count = ARRAY_SIZE(uartb2_peri_clk_src_list),
 					.src_inx = 1,
-					.clk = uartb2_peri_clk_src_list,
+					.list = uartb2_peri_clk_src_list,
 				},
 	.soft_reset_offset	= KPS_RST_MGR_REG_APB1_SOFTRST_OFFSET,
 	.clk_reset_mask		= KPS_RST_MGR_REG_APB1_SOFTRST_UARTB2_SOFT_RSTN_MASK,
@@ -5118,7 +5263,11 @@ static struct peri_clk CLK_NAME(uartb2) = {
 Peri clock name UARTB3
 */
 /*peri clk src list*/
-static struct clk* uartb3_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(crystal),CLK_PTR(var_156m),CLK_PTR(ref_156m));
+static struct clock_source uartb3_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(var_156m, 1),
+	INIT_SRC_CLK(ref_156m, 2),
+};
+
 static struct peri_clk CLK_NAME(uartb3) = {
 
 	.clk =	{
@@ -5149,10 +5298,10 @@ static struct peri_clk CLK_NAME(uartb3) = {
 					.pll_select_mask= KPS_CLK_MGR_REG_UARTB3_DIV_UARTB3_PLL_SELECT_MASK,
 					.pll_select_shift= KPS_CLK_MGR_REG_UARTB3_DIV_UARTB3_PLL_SELECT_SHIFT,
 				},
-	.src_clk = {
+	.src = {
 					.count = ARRAY_SIZE(uartb3_peri_clk_src_list),
 					.src_inx = 1,
-					.clk = uartb3_peri_clk_src_list,
+					.list = uartb3_peri_clk_src_list,
 				},
 	.soft_reset_offset	= KPS_RST_MGR_REG_APB1_SOFTRST_OFFSET,
 	.clk_reset_mask		= KPS_RST_MGR_REG_APB1_SOFTRST_UARTB3_SOFT_RSTN_MASK,
@@ -5162,7 +5311,11 @@ static struct peri_clk CLK_NAME(uartb3) = {
 Peri clock name SSP0_AUDIO
 */
 /*peri clk src list*/
-static struct clk* ssp0_audio_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(crystal),CLK_PTR(ref_312m),CLK_PTR(ref_cx40));
+static struct clock_source ssp0_audio_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(ref_312m, 1),
+	INIT_SRC_CLK(ref_cx40, 2),
+};
+
 static struct peri_clk CLK_NAME(ssp0_audio) = {
 
 	.clk =	{
@@ -5196,10 +5349,10 @@ static struct peri_clk CLK_NAME(ssp0_audio) = {
 					.pll_select_mask= KPS_CLK_MGR_REG_SSP0_DIV_SSP0_PLL_SELECT_MASK,
 					.pll_select_shift= KPS_CLK_MGR_REG_SSP0_DIV_SSP0_PLL_SELECT_SHIFT,
 				},
-	.src_clk = {
+	.src = {
 					.count = ARRAY_SIZE(ssp0_audio_peri_clk_src_list),
 					.src_inx = 0,
-					.clk = ssp0_audio_peri_clk_src_list,
+					.list = ssp0_audio_peri_clk_src_list,
 				},
 };
 
@@ -5207,10 +5360,10 @@ static struct peri_clk CLK_NAME(ssp0_audio) = {
 Peri clock name SSP1_AUDIO
 */
 /*peri clk src list*/
-static struct clk *ssp1_audio_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(
-							CLK_PTR(crystal),
-							CLK_PTR(ref_312m),
-							CLK_PTR(ref_cx40));
+static struct clock_source ssp1_audio_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(ref_312m, 1),
+	INIT_SRC_CLK(ref_cx40, 2),
+};
 
 static int clk_init_null(struct clk *clk)
 {
@@ -5271,10 +5424,10 @@ static struct peri_clk clk_ssp1_audio = {
 		.pll_select_shift =
 			KPS_CLK_MGR_REG_SSP1_DIV_SSP1_PLL_SELECT_SHIFT,
 	},
-	.src_clk = {
+	.src = {
 		.count = ARRAY_SIZE(ssp1_audio_peri_clk_src_list),
 		.src_inx = 0,
-		.clk = ssp1_audio_peri_clk_src_list,
+		.list = ssp1_audio_peri_clk_src_list,
 	},
 };
 
@@ -5283,7 +5436,12 @@ static struct peri_clk clk_ssp1_audio = {
 Peri clock name BSC1
 */
 /*peri clk src list*/
-static struct clk* bsc1_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(crystal),CLK_PTR(var_104m),CLK_PTR(ref_104m),CLK_PTR(var_13m),CLK_PTR(ref_13m));
+static struct clock_source bsc1_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(var_104m, 1),
+	INIT_SRC_CLK(ref_104m, 2), INIT_SRC_CLK(var_13m, 3),
+	INIT_SRC_CLK(ref_13m, 4),
+};
+
 static struct peri_clk CLK_NAME(bsc1) = {
 
 	.clk =	{
@@ -5311,10 +5469,10 @@ static struct peri_clk CLK_NAME(bsc1) = {
 					.pll_select_mask= KPS_CLK_MGR_REG_BSC1_DIV_BSC1_PLL_SELECT_MASK,
 					.pll_select_shift= KPS_CLK_MGR_REG_BSC1_DIV_BSC1_PLL_SELECT_SHIFT,
 				},
-	.src_clk = {
+	.src = {
 					.count = ARRAY_SIZE(bsc1_peri_clk_src_list),
 					.src_inx = 3,
-					.clk = bsc1_peri_clk_src_list,
+					.list = bsc1_peri_clk_src_list,
 				},
 	.soft_reset_offset	= KPS_RST_MGR_REG_APB2_SOFTRST_OFFSET,
 	.clk_reset_mask		= KPS_RST_MGR_REG_APB2_SOFTRST_BSC1_SOFT_RSTN_MASK,
@@ -5324,7 +5482,12 @@ static struct peri_clk CLK_NAME(bsc1) = {
 Peri clock name BSC2
 */
 /*peri clk src list*/
-static struct clk* bsc2_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(crystal),CLK_PTR(var_104m),CLK_PTR(ref_104m),CLK_PTR(var_13m),CLK_PTR(ref_13m));
+static struct clock_source bsc2_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(var_104m, 1),
+	INIT_SRC_CLK(ref_104m, 2), INIT_SRC_CLK(var_13m, 3),
+	INIT_SRC_CLK(ref_13m, 4),
+};
+
 static struct peri_clk CLK_NAME(bsc2) = {
 
 	.clk =	{
@@ -5352,10 +5515,10 @@ static struct peri_clk CLK_NAME(bsc2) = {
 					.pll_select_mask= KPS_CLK_MGR_REG_BSC2_DIV_BSC2_PLL_SELECT_MASK,
 					.pll_select_shift= KPS_CLK_MGR_REG_BSC2_DIV_BSC2_PLL_SELECT_SHIFT,
 				},
-	.src_clk = {
+	.src = {
 					.count = ARRAY_SIZE(bsc2_peri_clk_src_list),
 					.src_inx = 3,
-					.clk = bsc2_peri_clk_src_list,
+					.list = bsc2_peri_clk_src_list,
 				},
 	.soft_reset_offset	= KPS_RST_MGR_REG_APB2_SOFTRST_OFFSET,
 	.clk_reset_mask		= KPS_RST_MGR_REG_APB2_SOFTRST_BSC2_SOFT_RSTN_MASK,
@@ -5365,12 +5528,12 @@ static struct peri_clk CLK_NAME(bsc2) = {
 Peri clock name BSC3
 */
 /*peri clk src list*/
-static struct clk *bsc3_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(
-						CLK_PTR(crystal),
-						CLK_PTR(var_104m),
-						CLK_PTR(ref_104m),
-						CLK_PTR(var_13m),
-						CLK_PTR(ref_13m));
+static struct clock_source bsc3_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(var_104m, 1),
+	INIT_SRC_CLK(ref_104m, 2), INIT_SRC_CLK(var_13m, 3),
+	INIT_SRC_CLK(ref_13m, 4),
+};
+
 static struct peri_clk clk_bsc3 = {
 	.clk =	{
 		.flags = BSC3_PERI_CLK_FLAGS,
@@ -5400,10 +5563,10 @@ static struct peri_clk clk_bsc3 = {
 		.pll_select_shift =
 			KPS_CLK_MGR_REG_BSC3_DIV_BSC3_PLL_SELECT_SHIFT,
 	},
-	.src_clk = {
+	.src = {
 		.count = ARRAY_SIZE(bsc3_peri_clk_src_list),
 		.src_inx = 3,
-		.clk = bsc3_peri_clk_src_list,
+		.list = bsc3_peri_clk_src_list,
 	},
 	.soft_reset_offset = KPS_RST_MGR_REG_APB2_SOFTRST_OFFSET,
 	.clk_reset_mask = KPS_RST_MGR_REG_APB2_SOFTRST_BSC3_SOFT_RSTN_MASK,
@@ -5413,12 +5576,12 @@ static struct peri_clk clk_bsc3 = {
 Peri clock name BSC4
 */
 /*peri clk src list*/
-static struct clk *bsc4_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(
-						CLK_PTR(crystal),
-						CLK_PTR(var_104m),
-						CLK_PTR(ref_104m),
-						CLK_PTR(var_13m),
-						CLK_PTR(ref_13m));
+static struct clock_source bsc4_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(var_104m, 1),
+	INIT_SRC_CLK(ref_104m, 2), INIT_SRC_CLK(var_13m, 3),
+	INIT_SRC_CLK(ref_13m, 4),
+};
+
 static struct peri_clk clk_bsc4 = {
 	.clk =	{
 		.flags = BSC4_PERI_CLK_FLAGS,
@@ -5448,10 +5611,10 @@ static struct peri_clk clk_bsc4 = {
 		.pll_select_shift =
 			KPS_CLK_MGR_REG_BSC4_DIV_BSC4_PLL_SELECT_SHIFT,
 	},
-	.src_clk = {
+	.src = {
 		.count = ARRAY_SIZE(bsc4_peri_clk_src_list),
 		.src_inx = 3,
-		.clk = bsc4_peri_clk_src_list,
+		.list = bsc4_peri_clk_src_list,
 	},
 	.soft_reset_offset = KPS_RST_MGR_REG_APB2_SOFTRST_OFFSET,
 	.clk_reset_mask = KPS_RST_MGR_REG_APB2_SOFTRST_BSC4_SOFT_RSTN_MASK,
@@ -5503,7 +5666,12 @@ static struct clk_dfs ssp0_dfs =
 #endif
 
 /*peri clk src list*/
-static struct clk* ssp0_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(crystal),CLK_PTR(var_104m),CLK_PTR(ref_104m),CLK_PTR(var_96m),CLK_PTR(ref_96m));
+static struct clock_source ssp0_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(var_104m, 1),
+	INIT_SRC_CLK(ref_104m, 2), INIT_SRC_CLK(var_96m, 3),
+	INIT_SRC_CLK(ref_96m, 4),
+};
+
 static struct peri_clk CLK_NAME(ssp0) = {
 
 	.clk =	{
@@ -5536,10 +5704,10 @@ static struct peri_clk CLK_NAME(ssp0) = {
 					.pll_select_mask= KPS_CLK_MGR_REG_SSP0_DIV_SSP0_PLL_SELECT_MASK,
 					.pll_select_shift= KPS_CLK_MGR_REG_SSP0_DIV_SSP0_PLL_SELECT_SHIFT,
 				},
-	.src_clk = {
+	.src = {
 					.count = ARRAY_SIZE(ssp0_peri_clk_src_list),
 					.src_inx = 0,
-					.clk = ssp0_peri_clk_src_list,
+					.list = ssp0_peri_clk_src_list,
 				},
 	.soft_reset_offset	= KPS_RST_MGR_REG_APB1_SOFTRST_OFFSET,
 	.clk_reset_mask		= KPS_RST_MGR_REG_APB1_SOFTRST_SSP0_SOFT_RSTN_MASK,
@@ -5560,12 +5728,12 @@ static struct clk_dfs ssp1_dfs = {
 #endif
 
 /*peri clk src list*/
-static struct clk *ssp1_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(
-						CLK_PTR(crystal),
-						CLK_PTR(var_104m),
-						CLK_PTR(ref_104m),
-						CLK_PTR(var_96m),
-						CLK_PTR(ref_96m));
+static struct clock_source ssp1_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(var_104m, 1),
+	INIT_SRC_CLK(ref_104m, 2), INIT_SRC_CLK(var_96m, 3),
+	INIT_SRC_CLK(ref_96m, 4),
+};
+
 static struct peri_clk clk_ssp1 = {
 	.clk =	{
 		.flags = SSP1_PERI_CLK_FLAGS,
@@ -5600,10 +5768,10 @@ static struct peri_clk clk_ssp1 = {
 		.pll_select_shift =
 			KPS_CLK_MGR_REG_SSP1_DIV_SSP1_PLL_SELECT_SHIFT,
 	},
-	.src_clk = {
+	.src = {
 		.count = ARRAY_SIZE(ssp1_peri_clk_src_list),
 		.src_inx = 0,
-		.clk = ssp1_peri_clk_src_list,
+		.list = ssp1_peri_clk_src_list,
 	},
 	.soft_reset_offset = KPS_RST_MGR_REG_APB1_SOFTRST_OFFSET,
 	.clk_reset_mask = KPS_RST_MGR_REG_APB1_SOFTRST_SSP1_SOFT_RSTN_MASK,
@@ -5613,7 +5781,10 @@ static struct peri_clk clk_ssp1 = {
 Peri clock name TIMERS
 */
 /*peri clk src list*/
-static struct clk* timers_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(ref_1m),CLK_PTR(ref_32k));
+static struct clock_source timers_peri_clk_src_list[] = {
+	INIT_SRC_CLK(ref_1m, 0), INIT_SRC_CLK(ref_32k, 1),
+};
+
 static struct peri_clk CLK_NAME(timers) = {
     .clk =	{
 	.flags = TIMERS_PERI_CLK_FLAGS,
@@ -5640,11 +5811,11 @@ static struct peri_clk CLK_NAME(timers) = {
 	.pll_select_mask= KPS_CLK_MGR_REG_TIMERS_DIV_TIMERS_PLL_SELECT_MASK,
 	.pll_select_shift= KPS_CLK_MGR_REG_TIMERS_DIV_TIMERS_PLL_SELECT_SHIFT,
     },
-    .src_clk = {
-	.count = ARRAY_SIZE(timers_peri_clk_src_list),
-	.src_inx = 1,
-	.clk = timers_peri_clk_src_list,
-    },
+	.src = {
+		.count = ARRAY_SIZE(timers_peri_clk_src_list),
+		.src_inx = 0,
+		.list = timers_peri_clk_src_list,
+	},
     .soft_reset_offset	= KPS_RST_MGR_REG_APB1_SOFTRST_OFFSET,
     .clk_reset_mask	= KPS_RST_MGR_REG_APB1_SOFTRST_TIMERS_SOFT_RSTN_MASK,
 };
@@ -5662,7 +5833,10 @@ static struct clk_dfs spum_open_dfs =
 #endif
 
 /*peri clk src list*/
-static struct clk* spum_open_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(var_312m),CLK_PTR(ref_312m));
+static struct clock_source spum_open_peri_clk_src_list[] = {
+	INIT_SRC_CLK(var_312m, 0), INIT_SRC_CLK(ref_312m, 1),
+};
+
 static struct peri_clk CLK_NAME(spum_open) = {
     .clk =	{
 	.flags = SPUM_OPEN_PERI_CLK_FLAGS,
@@ -5697,11 +5871,11 @@ static struct peri_clk CLK_NAME(spum_open) = {
 	.pll_select_mask= KPS_CLK_MGR_REG_SPUM_OPEN_DIV_SPUM_OPEN_PLL_SELECT_MASK,
 	.pll_select_shift= KPS_CLK_MGR_REG_SPUM_OPEN_DIV_SPUM_OPEN_PLL_SELECT_SHIFT,
     },
-    .src_clk = {
-	.count = ARRAY_SIZE(spum_open_peri_clk_src_list),
-	.src_inx = 0,
-	.clk = spum_open_peri_clk_src_list,
-    },
+	.src = {
+		.count = ARRAY_SIZE(spum_open_peri_clk_src_list),
+		.src_inx = 0,
+		.list = spum_open_peri_clk_src_list,
+	},
     .soft_reset_offset	= KPS_RST_MGR_REG_HSM_SOFTRST_OFFSET,
     .clk_reset_mask	= KPS_RST_MGR_REG_HSM_SOFTRST_SPUM_OPEN_SOFT_RSTN_MASK,
 };
@@ -5717,7 +5891,10 @@ static struct clk_dfs spum_sec_dfs =
 Peri clock name SPUM_SEC
 */
 /*peri clk src list*/
-static struct clk* spum_sec_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(var_312m),CLK_PTR(ref_312m));
+static struct clock_source spum_sec_peri_clk_src_list[] = {
+	INIT_SRC_CLK(var_312m, 0), INIT_SRC_CLK(ref_312m, 1),
+};
+
 static struct peri_clk CLK_NAME(spum_sec) = {
     .clk =	{
 	.flags = SPUM_SEC_PERI_CLK_FLAGS,
@@ -5752,11 +5929,11 @@ static struct peri_clk CLK_NAME(spum_sec) = {
 	.pll_select_mask= KPS_CLK_MGR_REG_SPUM_SEC_DIV_SPUM_SEC_PLL_SELECT_MASK,
 	.pll_select_shift= KPS_CLK_MGR_REG_SPUM_SEC_DIV_SPUM_SEC_PLL_SELECT_SHIFT,
     },
-    .src_clk = {
-	.count = ARRAY_SIZE(spum_sec_peri_clk_src_list),
-	.src_inx = 0,
-	.clk = spum_sec_peri_clk_src_list,
-    },
+	.src = {
+		.count = ARRAY_SIZE(spum_sec_peri_clk_src_list),
+		.src_inx = 0,
+		.list = spum_sec_peri_clk_src_list,
+	},
     .soft_reset_offset	= KPS_RST_MGR_REG_HSM_SOFTRST_OFFSET,
     .clk_reset_mask	= KPS_RST_MGR_REG_HSM_SOFTRST_SPUM_SEC_SOFT_RSTN_MASK,
 };
@@ -5773,6 +5950,7 @@ static u32 mm_clk_freq_list2[] = DEFINE_ARRAY_ARGS(83200000,83200000);
 static u32 mm_clk_freq_list3[] = DEFINE_ARRAY_ARGS(99840000,99840000);
 static u32 mm_clk_freq_list4[] = DEFINE_ARRAY_ARGS(166400000,166400000);
 static u32 mm_clk_freq_list5[] = DEFINE_ARRAY_ARGS(249600000,249600000);
+static u32 mm_clk_freq_list6[] = DEFINE_ARRAY_ARGS(312000000, 312000000);
 
 /*MM CCU state save register list*/
 static struct reg_save mm_reg_save[] =
@@ -5827,17 +6005,21 @@ static struct ccu_clk CLK_NAME(mm) = {
 	.lvm0_3_offset = MM_CLK_MGR_REG_LVM0_3_OFFSET,
 	.vlt0_3_offset = MM_CLK_MGR_REG_VLT0_3_OFFSET,
 	.vlt4_7_offset = MM_CLK_MGR_REG_VLT4_7_OFFSET,
-#ifdef CONFIG_DEBUG_FS
+
 	.policy_dbg_offset = MM_CLK_MGR_REG_POLICY_DBG_OFFSET,
 	.policy_dbg_act_freq_shift = MM_CLK_MGR_REG_POLICY_DBG_ACT_FREQ_SHIFT,
 	.policy_dbg_act_policy_shift = MM_CLK_MGR_REG_POLICY_DBG_ACT_POLICY_SHIFT,
+#ifdef CONFIG_DEBUG_FS
 	.clk_mon_offset = MM_CLK_MGR_REG_CLKMON_OFFSET,
 #endif
 	.freq_volt = MM_CCU_FREQ_VOLT_TBL,
 	.freq_count = MM_CCU_FREQ_VOLT_TBL_SZ,
 	.volt_peri = DEFINE_ARRAY_ARGS(VLT_NORMAL_PERI,VLT_HIGH_PERI),
 	.freq_policy = MM_CCU_FREQ_POLICY_TBL,
-	.freq_tbl = DEFINE_ARRAY_ARGS(mm_clk_freq_list0,mm_clk_freq_list1,mm_clk_freq_list2,mm_clk_freq_list3,mm_clk_freq_list4,mm_clk_freq_list5),
+	.freq_tbl = DEFINE_ARRAY_ARGS(mm_clk_freq_list0, mm_clk_freq_list1,
+			mm_clk_freq_list2, mm_clk_freq_list3, mm_clk_freq_list4,
+			mm_clk_freq_list5, mm_clk_freq_list6),
+	.freq_tbl_size = 7,
 	.ccu_reset_mgr_base = HW_IO_PHYS_TO_VIRT(MM_RST_BASE_ADDR),
 	.reset_wr_access_offset = MM_RST_MGR_REG_WR_ACCESS_OFFSET,
 
@@ -6150,7 +6332,11 @@ static struct peri_clk clk_pixelv = {
 Peri clock name mm_switch_axi
 */
 /*peri clk src list*/
-static struct clk* mm_switch_axi_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(crystal),CLK_PTR(var_500m),CLK_PTR(var_312m));
+static struct clock_source mm_switch_axi_peri_clk_src_list[] = {
+	INIT_SRC_CLK(crystal, 0), INIT_SRC_CLK(var_500m, 1),
+	INIT_SRC_CLK(var_312m, 2),
+};
+
 static struct peri_clk CLK_NAME(mm_switch_axi) = {
 
 	.clk =	{
@@ -6183,10 +6369,10 @@ static struct peri_clk CLK_NAME(mm_switch_axi) = {
 					.pll_select_mask= MM_CLK_MGR_REG_AXI_DIV_MM_SWITCH_AXI_PLL_SELECT_MASK,
 					.pll_select_shift= MM_CLK_MGR_REG_AXI_DIV_MM_SWITCH_AXI_PLL_SELECT_SHIFT,
 				},
-	.src_clk = {
+	.src = {
 					.count = ARRAY_SIZE(mm_switch_axi_peri_clk_src_list),
 					.src_inx = 2,
-					.clk = mm_switch_axi_peri_clk_src_list,
+			.list = mm_switch_axi_peri_clk_src_list,
 				},
 };
 
@@ -6557,7 +6743,10 @@ static struct bus_clk CLK_NAME(v3d_axi) = {
 Peri clock name CSI0_LP
 */
 /*peri clk src list*/
-static struct clk* csi0_lp_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(var_500m),CLK_PTR(var_312m));
+static struct clock_source csi0_lp_peri_clk_src_list[] = {
+	INIT_SRC_CLK(var_500m, 0), INIT_SRC_CLK(var_312m, 1),
+};
+
 static struct peri_clk CLK_NAME(csi0_lp) = {
 
 	.clk =	{
@@ -6589,10 +6778,10 @@ static struct peri_clk CLK_NAME(csi0_lp) = {
 					.pll_select_mask= MM_CLK_MGR_REG_CSI0_DIV_CSI0_LP_PLL_SELECT_MASK,
 					.pll_select_shift= MM_CLK_MGR_REG_CSI0_DIV_CSI0_LP_PLL_SELECT_SHIFT,
 				},
-	.src_clk = {
+	.src = {
 					.count = ARRAY_SIZE(csi0_lp_peri_clk_src_list),
 					.src_inx = 0,
-					.clk = csi0_lp_peri_clk_src_list,
+					.list = csi0_lp_peri_clk_src_list,
 				},
     .soft_reset_offset	= MM_RST_MGR_REG_SOFT_RSTN0_OFFSET,
     .clk_reset_mask	= MM_RST_MGR_REG_SOFT_RSTN0_CSI0_SOFT_RSTN_MASK,
@@ -6602,7 +6791,10 @@ static struct peri_clk CLK_NAME(csi0_lp) = {
 Peri clock name CSI1_LP
 */
 /*peri clk src list*/
-static struct clk* csi1_lp_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(var_500m),CLK_PTR(var_312m));
+static struct clock_source csi1_lp_peri_clk_src_list[] = {
+	INIT_SRC_CLK(var_500m, 0), INIT_SRC_CLK(var_312m, 1),
+};
+
 static struct peri_clk CLK_NAME(csi1_lp) = {
 
 	.clk =	{
@@ -6634,10 +6826,10 @@ static struct peri_clk CLK_NAME(csi1_lp) = {
 					.pll_select_mask= MM_CLK_MGR_REG_CSI1_DIV_CSI1_LP_PLL_SELECT_MASK,
 					.pll_select_shift= MM_CLK_MGR_REG_CSI1_DIV_CSI1_LP_PLL_SELECT_SHIFT,
 				},
-	.src_clk = {
+	.src = {
 					.count = ARRAY_SIZE(csi1_lp_peri_clk_src_list),
 					.src_inx = 0,
-					.clk = csi1_lp_peri_clk_src_list,
+					.list = csi1_lp_peri_clk_src_list,
 				},
     .soft_reset_offset	= MM_RST_MGR_REG_SOFT_RSTN0_OFFSET,
     .clk_reset_mask	= MM_RST_MGR_REG_SOFT_RSTN0_CSI1_SOFT_RSTN_MASK,
@@ -6647,7 +6839,10 @@ static struct peri_clk CLK_NAME(csi1_lp) = {
 Peri clock name SMI
 */
 /*peri clk src list*/
-static struct clk* smi_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(var_500m),CLK_PTR(var_312m));
+static struct clock_source smi_peri_clk_src_list[] = {
+	INIT_SRC_CLK(var_500m, 0), INIT_SRC_CLK(var_312m, 1),
+};
+
 static struct peri_clk CLK_NAME(smi) = {
 
 	.clk =	{
@@ -6680,10 +6875,10 @@ static struct peri_clk CLK_NAME(smi) = {
 					.pll_select_mask= MM_CLK_MGR_REG_SMI_DIV_SMI_PLL_SELECT_MASK,
 					.pll_select_shift= MM_CLK_MGR_REG_SMI_DIV_SMI_PLL_SELECT_SHIFT,
 				},
-	.src_clk = {
+	.src = {
 					.count = ARRAY_SIZE(smi_peri_clk_src_list),
 					.src_inx = 0,
-					.clk = smi_peri_clk_src_list,
+					.list = smi_peri_clk_src_list,
 				},
     .soft_reset_offset	= MM_RST_MGR_REG_SOFT_RSTN0_OFFSET,
     .clk_reset_mask	= MM_RST_MGR_REG_SOFT_RSTN0_SMI_SOFT_RSTN_MASK,
@@ -6693,7 +6888,10 @@ static struct peri_clk CLK_NAME(smi) = {
 Peri clock name DSI0_ESC
 */
 /*peri clk src list*/
-static struct clk* dsi0_esc_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(var_500m),CLK_PTR(var_312m));
+static struct clock_source dsi0_esc_peri_clk_src_list[] = {
+	INIT_SRC_CLK(var_500m, 0), INIT_SRC_CLK(var_312m, 1),
+};
+
 static struct peri_clk CLK_NAME(dsi0_esc) = {
 
 	.clk =	{
@@ -6725,10 +6923,10 @@ static struct peri_clk CLK_NAME(dsi0_esc) = {
 					.pll_select_mask= MM_CLK_MGR_REG_DSI0_DIV_DSI0_ESC_PLL_SELECT_MASK,
 					.pll_select_shift= MM_CLK_MGR_REG_DSI0_DIV_DSI0_ESC_PLL_SELECT_SHIFT,
 				},
-	.src_clk = {
+	.src = {
 					.count = ARRAY_SIZE(dsi0_esc_peri_clk_src_list),
 					.src_inx = 0,
-					.clk = dsi0_esc_peri_clk_src_list,
+					.list = dsi0_esc_peri_clk_src_list,
 				},
     .soft_reset_offset	= MM_RST_MGR_REG_SOFT_RSTN1_OFFSET,
     .clk_reset_mask	= MM_RST_MGR_REG_SOFT_RSTN1_DSI0_SOFT_RSTN_MASK,
@@ -6738,7 +6936,10 @@ static struct peri_clk CLK_NAME(dsi0_esc) = {
 Peri clock name DSI_PLL_O_DSI_PLL
 */
 /*peri clk src list*/
-static struct clk* dsi_pll_o_dsi_pll_peri_clk_src_list[] = DEFINE_ARRAY_ARGS(CLK_PTR(var_500m));
+static struct clock_source dsi_pll_o_dsi_pll_peri_clk_src_list[] = {
+	INIT_SRC_CLK(var_500m, 0),
+};
+
 static struct peri_clk CLK_NAME(dsi_pll_o_dsi_pll) = {
 
 	.clk =	{
@@ -6764,11 +6965,11 @@ static struct peri_clk CLK_NAME(dsi_pll_o_dsi_pll) = {
 					.div_mask = MM_CLK_MGR_REG_O_DSI_PLL_CLK_DIV_DSI_PLL_O_DSI_PLL_DIV_MASK,
 					.div_shift = MM_CLK_MGR_REG_O_DSI_PLL_CLK_DIV_DSI_PLL_O_DSI_PLL_DIV_SHIFT,
 				},
-	.src_clk = {
+	.src = {
 					.count = ARRAY_SIZE(dsi_pll_o_dsi_pll_peri_clk_src_list),
 					.src_inx = 0,
-					.clk = dsi_pll_o_dsi_pll_peri_clk_src_list,
-				},
+		.list = dsi_pll_o_dsi_pll_peri_clk_src_list,
+	},
 };
 
 
@@ -6928,7 +7129,7 @@ int root_ccu_clk_init(struct clk* clk)
     writel(reg_val, KONA_ROOT_CLK_VA + ROOT_CLK_MGR_REG_DIG_CLKGATE_OFFSET);
 
 	/*Reset 8-phase enable de-glitch enable bit for B1 and later chips*/
-	if (get_chip_id() >= HAWAII_CHIP_ID(HAWAII_CHIP_REV_A0)) {
+		if (get_chip_id() >= KONA_CHIP_ID_HAWAII_A0){
 		reg_val = readl(KONA_ROOT_CLK_VA +
 					ROOT_CLK_MGR_REG_PLL1CTRL3_OFFSET);
 		reg_val &=
@@ -7007,10 +7208,10 @@ static int mm_ccu_set_freq_policy(struct ccu_clk *ccu_clk, int policy_id,
 	ccu_write_access_enable(ccu_clk,true);
 	ccu_policy_engine_stop(ccu_clk);
 
-	if (opp_info->freq_id < MM_CCU_FREQ_ID_SUPER_TURBO)
-		reg_val &= ~MM_CLK_MGR_REG_POLICY_FREQ_POLICY_BASE_312_MASK;
-	else
+	if (opp_info->ctrl_prms == MM_CLK_SRC_312M)
 		reg_val |= MM_CLK_MGR_REG_POLICY_FREQ_POLICY_BASE_312_MASK;
+	else
+		reg_val &= ~MM_CLK_MGR_REG_POLICY_FREQ_POLICY_BASE_312_MASK;
 	clk_dbg("%s: reg_val = %x\n", __func__, reg_val);
 	writel(reg_val, CCU_POLICY_FREQ_REG(ccu_clk));
 	ccu_policy_engine_resume(ccu_clk,
@@ -7234,6 +7435,7 @@ static struct __init clk_lookup hawaii_clk_tbl[] =
 	BRCM_REGISTER_CLK(VAR_104M_REF_CLK_NAME_STR, NULL, var_104m),
 	BRCM_REGISTER_CLK(VAR_52M_REF_CLK_NAME_STR, NULL, var_52m),
 	BRCM_REGISTER_CLK(VAR_13M_REF_CLK_NAME_STR, NULL, var_13m),
+	BRCM_REGISTER_CLK(DIG_PREDIV_PERI_CLK_NAME_STR, NULL, dig_prediv),
 	BRCM_REGISTER_CLK(DIG_CH0_PERI_CLK_NAME_STR, NULL, dig_ch0),
 	BRCM_REGISTER_CLK(DIG_CH1_PERI_CLK_NAME_STR, NULL, dig_ch1),
 	BRCM_REGISTER_CLK(DIG_CH2_PERI_CLK_NAME_STR, NULL, dig_ch2),
@@ -7581,6 +7783,27 @@ static void change_arm_pll_config(int mdiv)
 				pll_chnl_clk->pll_load_ch_en_offset));
 }
 
+#if defined(CONFIG_BCM_HWCAPRI_1605_A2)
+static inline void proc_ccu_set_pl310_trigger(struct ccu_clk *ccu_clk,
+					      u32 target_freq_id)
+{
+	/* Do not override settings for non-turbo platforms */
+	if (max_a9_rate <= MAX_A9_FREQ)
+		return;
+
+	if (cur_freq_id <= PROC_CCU_FREQ_ID_TURBO &&
+	    target_freq_id == PROC_CCU_FREQ_ID_SUPER_TURBO)
+		writel(0x1, CCU_REG_ADDR(ccu_clk,
+			KPROC_CLK_MGR_REG_PL310_TRIGGER_OFFSET));
+	else if (cur_freq_id == PROC_CCU_FREQ_ID_SUPER_TURBO &&
+		 target_freq_id <= PROC_CCU_FREQ_ID_TURBO)
+		writel(0x0, CCU_REG_ADDR(ccu_clk,
+			KPROC_CLK_MGR_REG_PL310_TRIGGER_OFFSET));
+
+	cur_freq_id = target_freq_id;
+}
+#endif
+
 static int proc_ccu_set_freq_policy(struct ccu_clk *ccu_clk, int policy_id,
 				   struct opp_info *opp_info)
 {
@@ -7589,6 +7812,7 @@ static int proc_ccu_set_freq_policy(struct ccu_clk *ccu_clk, int policy_id,
 	u32 target_volt;
 	int curr_opp;
 	u32 sw_freq_id;
+
 	clk_dbg("%s:policy = %d, freq = %d opp = %d prms = %d\n",
 			__func__, policy_id, opp_info->freq_id,
 			opp_info->opp_id, opp_info->ctrl_prms);
@@ -7626,6 +7850,13 @@ static int proc_ccu_set_freq_policy(struct ccu_clk *ccu_clk, int policy_id,
 /* Move economy volt id to that of target voltage to avoid extra seq txn */
 			ccu_set_voltage(ccu_clk, sw_freq_id, target_volt);
 /* Move to economy */
+#if defined(CONFIG_BCM_HWCAPRI_1605_A2)
+			/*
+			 * Set the PL310 trigger value based on freq_id
+			 * transition
+			 */
+			proc_ccu_set_pl310_trigger(ccu_clk, sw_freq_id);
+#endif
 			reg_val = readl(CCU_POLICY_FREQ_REG(ccu_clk));
 			reg_val &= ~(CCU_FREQ_POLICY_MASK << shift);
 			reg_val |= sw_freq_id << shift;
@@ -7643,6 +7874,11 @@ static int proc_ccu_set_freq_policy(struct ccu_clk *ccu_clk, int policy_id,
 				target_volt);
 	}
 
+#if defined(CONFIG_BCM_HWCAPRI_1605_A2)
+	/* Set the PL310 trigger value based on freq_id transition */
+	proc_ccu_set_pl310_trigger(ccu_clk, opp_info->freq_id);
+#endif
+
 	reg_val = readl(CCU_POLICY_FREQ_REG(ccu_clk));
 	reg_val &= ~(CCU_FREQ_POLICY_MASK << shift);
 	reg_val |= opp_info->freq_id << shift;
@@ -7658,9 +7894,16 @@ static int proc_ccu_set_freq_policy(struct ccu_clk *ccu_clk, int policy_id,
 
 int __init __clock_init(void)
 {
+#if defined(CONFIG_BCM_HWCAPRI_1605_A2)
+	struct clk *a9_pll;
+#endif
 
 #ifndef CONFIG_KONA_POWER_MGR
 	set_mm_override();
+#endif
+
+#if defined(CONFIG_BCM_HWCAPRI_1605_A2)
+	cur_freq_id = 0;
 #endif
 	/*overrride callback functions b4 registering the clks*/
 
@@ -7689,6 +7932,10 @@ int __init __clock_init(void)
 	dig_ch_peri_clk_ops = gen_peri_clk_ops;
 	dig_ch_peri_clk_ops.init = dig_clk_init;
 
+	dig_prediv_peri_clk_ops = gen_peri_clk_ops;
+	dig_prediv_peri_clk_ops.enable = NULL;
+	dig_prediv_peri_clk_ops.init = NULL;
+
 	en_8ph_pll1_ref_clk_ops = gen_ref_clk_ops;
 	en_8ph_pll1_ref_clk_ops.init = en_8ph_pll1_clk_init;
 	en_8ph_pll1_ref_clk_ops.enable = en_8ph_pll1_clk_enable;
@@ -7713,6 +7960,15 @@ int __init __clock_init(void)
 
 	if (clk_register(hawaii_clk_tbl, ARRAY_SIZE(hawaii_clk_tbl)))
 		printk(KERN_INFO "%s clk_register failed !!!!\n", __func__);
+
+	kona_timer_clk_setup();
+
+#if defined(CONFIG_BCM_HWCAPRI_1605_A2)
+	a9_pll = clk_get(NULL, A9_PLL_CLK_NAME_STR);
+	BUG_ON(IS_ERR_OR_NULL(a9_pll));
+	max_a9_rate = clk_get_rate(a9_pll) / 2;
+	clk_put(a9_pll);
+#endif
 
     return 0;
 }
@@ -8073,7 +8329,6 @@ int __init clock_debug_add_misc_clock(struct clk *c)
 
 int __init clock_late_init(void)
 {
-	clk_trace_init(ARRAY_SIZE(hawaii_clk_tbl));
 #ifdef CONFIG_DEBUG_FS
 	int i;
 	clock_debug_init();

@@ -33,7 +33,11 @@
 #include "../lcd/lcd_clock.h"
 #include <plat/csl/csl_tectl_vc4lite.h>
 #include <linux/regulator/consumer.h>
+#include <linux/module.h>
 #include <video/kona_fb.h>
+#include <linux/power_supply.h>
+
+#define ILI_ESD_OPERATION
 
 #define DSI_ERR(fmt, args...) \
 	printk(KERN_ERR "%s:%d " fmt, __func__, __LINE__, ##args)
@@ -60,6 +64,7 @@ typedef struct {
 	CSL_DSI_CM_VC_t *cmnd_mode;
 	CSL_DSI_CFG_t *dsi_cfg;
 	DISPDRV_INFO_T		*disp_info;
+	UInt8 maxRetPktSize;
 } DispDrv_PANEL_t;
 
 #if 0
@@ -104,17 +109,19 @@ static Int32 DSI_Update(
 	 DISPDRV_CB_T apiCb);
 
 static Int32 DSI_WinReset(DISPDRV_HANDLE_T drvH);
-
+#if 0
 static int DSI_ReadReg(DISPDRV_HANDLE_T drvH, UInt8 reg, UInt8 *rxBuff);
-
+#endif
 static Int32 DSI_DCS_Read(DispDrv_PANEL_t *pPanel,
 		UInt8 reg, UInt8 *rxBuff, UInt8 buffLen);
-
+#if 0
 static int DSI_ReadPanelID(DispDrv_PANEL_t *pPanel);
+#endif
 void panel_write(UInt8 *buff);
 int panel_read(UInt8 reg, UInt8 *rxBuff, UInt8 buffLen);
 extern void panel_initialize(char *init_seq);
-extern void panel_read_id(void);
+extern int panel_read_id(void);
+
 
 static DISPDRV_T disp_drv_dsi = {
 	.init = &DSI_Init,
@@ -152,6 +159,24 @@ CSL_DSI_CFG_t DispDrv_dsiCfg = {
 static struct regulator *disp_reg;
 
 static DispDrv_PANEL_t panel[1];
+
+
+#ifdef CONFIG_LCD_LOW_TEMP_CONVERSION
+int get_temp_from_ps_battery(void)
+{
+    struct power_supply *ps;
+    union power_supply_propval value;
+
+    ps = power_supply_get_by_name("battery");
+
+    ps->get_property(ps, POWER_SUPPLY_PROP_TEMP, &value);
+
+    printk("%s, temperature=%d\n",__func__, value.intval );
+
+    return value.intval;
+
+}
+#endif
 
 /*###########################################################################*/
 
@@ -192,7 +217,7 @@ static int DSI_panel_turn_on(DispDrv_PANEL_t *pPanel)
 	res = CSL_DSI_SendPacket(pPanel->clientH, &msg, FALSE);
 	return res;
 }
-
+#if 0 // not used
 static int DSI_ReadPanelID(DispDrv_PANEL_t *pPanel)
 {
 	int ret = 0;
@@ -229,7 +254,7 @@ static int DSI_ReadPanelID(DispDrv_PANEL_t *pPanel)
 done:
 	return ret;
 }
-
+#endif
 /*
  *
  *   Function Name: DSI_TeOn
@@ -277,6 +302,7 @@ static int DSI_TeOff(DispDrv_PANEL_t *pPanel)
  *   Description:   DSI Read Reg
  *
  */
+ #if 0
 static int DSI_ReadReg(DISPDRV_HANDLE_T drvH, UInt8 reg, UInt8 *rxBuff)
 {
 	DispDrv_PANEL_t	 *pPanel = (DispDrv_PANEL_t *)drvH;
@@ -313,7 +339,7 @@ static int DSI_ReadReg(DISPDRV_HANDLE_T drvH, UInt8 reg, UInt8 *rxBuff)
 	}
 	return res;
 }
-
+#endif
 
 /*
  *
@@ -431,7 +457,25 @@ Int32 DSI_Init(DISPDRV_INFO_T *info, DISPDRV_HANDLE_T *handle)
 		switch (info->in_fmt) {
 		case DISPDRV_FB_FORMAT_RGB565:
 			DispDrv_VCCmCfg.cm_in = LCD_IF_CM_I_RGB565P;
-			DispDrv_VCCmCfg.cm_out = LCD_IF_CM_O_RGB565;
+			switch (info->out_fmt) {
+			case DISPDRV_FB_FORMAT_RGB565:
+				DispDrv_VCCmCfg.cm_out =
+						LCD_IF_CM_O_RGB565;
+				break;
+			case DISPDRV_FB_FORMAT_RGB666P:
+				DispDrv_VCCmCfg.cm_out =
+						LCD_IF_CM_O_RGB666;
+				break;
+			case DISPDRV_FB_FORMAT_RGB666U:
+				DispDrv_VCCmCfg.cm_out =
+						LCD_IF_CM_O_RGB666U;
+				break;
+			default:
+				DSI_ERR("Invalid output colour format!.");
+				DispDrv_VCCmCfg.cm_out =
+						LCD_IF_CM_O_RGB565;
+				DSI_ERR("Changing to RGB565\n");
+			}
 			break;
 		case DISPDRV_FB_FORMAT_xRGB8888:
 			DispDrv_VCCmCfg.cm_in = LCD_IF_CM_I_xRGB8888;
@@ -480,6 +524,7 @@ Int32 DSI_Init(DISPDRV_INFO_T *info, DISPDRV_HANDLE_T *handle)
 
 		pPanel->disp_info = info;
 		pPanel->isTE = info->vmode ? false : info->te_ctrl;
+		pPanel->maxRetPktSize = 0;
 
 		/* get TE pin configuration */
 		pPanel->teIn  =	TE_VC4L_IN_1_DSI0;
@@ -526,6 +571,7 @@ Int32 DSI_Exit(DISPDRV_HANDLE_T drvH)
  *  Description:   disp bus ON
  *
  */
+extern int reset_skip;
 Int32 DSI_Open(DISPDRV_HANDLE_T drvH)
 {
 	Int32 res = 0;
@@ -534,29 +580,6 @@ Int32 DSI_Open(DISPDRV_HANDLE_T drvH)
 	pPanel = (DispDrv_PANEL_t *) drvH;
 
 	DSI_INFO("enter\n");
-	if (!disp_reg) {
-		/*CAM2 LDO */
-		disp_reg = regulator_get(NULL, pPanel->disp_info->reg_name);
-		if (IS_ERR_OR_NULL(disp_reg)) {
-			DSI_ERR("Failed to get disp_reg\n");
-			goto err_reg_init;
-		}
-
-	}
-
-	
-	if (g_display_enabled)
-			regulator_enable(disp_reg); /* Turn ON disp_reg to increase use count */
-
-	res = gpio_request(pPanel->disp_info->rst->gpio, "LCD_RST");
-	if (res < 0) {
-		DSI_ERR("gpio_request failed %ld\n", res);
-		goto err_gpio_request;
-	}
-
-	if (!g_display_enabled)
-		hw_reset(drvH, FALSE);
-
 
 	if (pPanel->drvState !=	DRV_STATE_INIT)	{
 		DSI_ERR("ERROR State != Init\n");
@@ -588,6 +611,11 @@ Int32 DSI_Open(DISPDRV_HANDLE_T drvH)
 		goto err_dsi_open_cl;
 	}
 
+	if (CSL_DSI_Ulps(pPanel->clientH, FALSE) != CSL_LCD_OK) {
+		DSI_ERR("Exit DSI Ulps Failed\n");
+		goto err_dsi_ulps;
+	}
+
 	if (CSL_DSI_OpenCmVc(pPanel->clientH,
 		pPanel->cmnd_mode, &pPanel->dsiCmVcHandle) != CSL_LCD_OK) {
 
@@ -607,13 +635,30 @@ Int32 DSI_Open(DISPDRV_HANDLE_T drvH)
 			goto err_dma_init;
 		}
 	}
+	if (!disp_reg) {
+		/*CAM2 LDO */
+		disp_reg = regulator_get(NULL, pPanel->disp_info->reg_name);
+		if (IS_ERR_OR_NULL(disp_reg)) {
+			DSI_ERR("Failed to get disp_reg\n");
+			goto err_reg_init;
+		}
+		if (g_display_enabled)
+			regulator_enable(disp_reg); /* Turn ON disp_reg to increase use count */
+	}
+	res = gpio_request(pPanel->disp_info->rst->gpio, "LCD_RST");
+	if (res < 0) {
+		DSI_ERR("gpio_request failed %ld\n", res);
+		goto err_gpio_request;
+	}
 
-
+	if (reset_skip)
+		hw_reset(drvH, FALSE);
+#if 0	// SS & DS not used
 	if (DSI_ReadPanelID(pPanel) < 0) {
 		DSI_ERR("ID read failed\n");
 		goto err_id_read;
 	}
-
+#endif
 	pPanel->win_dim.l = 0;
 	pPanel->win_dim.r = pPanel->disp_info->width-1;
 	pPanel->win_dim.t = 0;
@@ -626,14 +671,16 @@ Int32 DSI_Open(DISPDRV_HANDLE_T drvH)
 	DSI_INFO("OK\n");
 
 	return res;
-
+#if 0
 err_id_read:
 	gpio_free(pPanel->disp_info->rst->gpio);
+#endif
 err_gpio_request:
 err_reg_init:
 err_dma_init:
 	CSL_DSI_CloseCmVc(pPanel->dsiCmVcHandle);
 err_dsi_open_cm:
+err_dsi_ulps:
 	CSL_DSI_CloseClient(pPanel->clientH);
 err_dsi_open_cl:
 	CSL_DSI_Close(pPanel->busNo);
@@ -661,6 +708,11 @@ Int32 DSI_Close(DISPDRV_HANDLE_T drvH)
 
 	if (CSL_DSI_CloseCmVc(pPanel->dsiCmVcHandle)) {
 		DSI_ERR("Closing Command Mode Handle\n");
+		return -1;
+	}
+
+	if (CSL_DSI_Ulps(pPanel->clientH, TRUE) != CSL_LCD_OK)	{
+		DSI_ERR("ERR enter DSI Ulps\n");
 		return -1;
 	}
 
@@ -713,12 +765,11 @@ void panel_write(UInt8 *buff)
  */
 int panel_read(UInt8 reg, UInt8 *rxBuff, UInt8 buffLen)
 {
-int ret=0;
+	int ret=0;
 	ret = DSI_DCS_Read(panel, reg, rxBuff, buffLen);
-	if(ret<0)
-		return -1;
-	return 0;
+	return ret;
 }
+EXPORT_SYMBOL(panel_read);
 
 static u8 set_bl_seq[] = {
 	2, 0x51, 0xFF, 0x00 /* The Last 0x00 : Sequence End Mark */
@@ -802,8 +853,12 @@ static Int32 DSI_SetMaxRtnPktSize(DISPDRV_HANDLE_T drvH, UInt8 size)
 	Int32 res = 0;
 	CSL_LCD_RES_T cslRes;
 
-	txData[0]=size;
-	txData[1]=0x0;
+	if (size == pPanel->maxRetPktSize)
+		return 0;
+	DSI_INFO("%d\n", size);
+
+	txData[0] = size;
+	txData[1] = 0x0;
 	msg.vc = pPanel->cmnd_mode->vc;
 	msg.isLP = pPanel->disp_info->cmnd_LP;
 	msg.endWithBta = FALSE;
@@ -822,7 +877,9 @@ static Int32 DSI_SetMaxRtnPktSize(DISPDRV_HANDLE_T drvH, UInt8 size)
 			"[DISPDRV]:	ERR: Setting Max. Return Packet Size [0x%02X]\n\r"
 			, DSI_DT_SH_MAX_RET_PKT_SIZE);
 		res = -1;
-	}
+	} else
+		pPanel->maxRetPktSize = size;
+
 	return res;
 }
 
@@ -847,7 +904,7 @@ static Int32 DSI_DCS_Read(DispDrv_PANEL_t *pPanel,
 	msg.msgLen     = 2;
 	msg.vc = pPanel->cmnd_mode->vc;
 	msg.isLP = pPanel->disp_info->cmnd_LP;
-	if(buffLen > 2)
+	if (buffLen > 2)
 		msg.isLong     = TRUE;
 	else
 		msg.isLong     = FALSE;
@@ -868,8 +925,8 @@ static Int32 DSI_DCS_Read(DispDrv_PANEL_t *pPanel,
 			, reg);
 		res = -1;
 	} else {
-		DSI_INFO("[DISPDRV]: Command: 0x%02X\n",reg);
-		for(i=0; i<buffLen; i++)
+		DSI_INFO("[DISPDRV]: Command: 0x%02X\n", reg);
+		for (i = 0; i < buffLen; i++)
 			DSI_INFO("Parameter[%d]: [0x%02X]\n", i, rxBuff[i]);
 		res = rxMsg.readReplySize;
 	}
@@ -895,6 +952,7 @@ Int32 DSI_PowerControl(
 	case CTRL_PWR_ON:
 		switch (pPanel->pwrState) {
 		case STATE_PWR_OFF:
+			printk("%s : %d\n", __func__, __LINE__);			
 			res = regulator_enable(disp_reg);
 			if (res < 0) {
 				DSI_ERR("Couldn't enable regulator, res=%ld\n",
@@ -903,7 +961,16 @@ Int32 DSI_PowerControl(
 				break;
 			}
 			usleep_range(1000, 1010);
+
+
+
+#ifdef CONFIG_LCD_LOW_TEMP_CONVERSION
+		if( -50 > get_temp_from_ps_battery())
+			DSI_ExecCmndList(pPanel, info->init_lowtemp_seq);	
+		else
+#endif		
 			DSI_ExecCmndList(pPanel, info->init_seq);
+			
 			DSI_WinSet(drvH, TRUE, &pPanel->win_dim);
 			pPanel->pwrState = STATE_SCREEN_OFF;
 			DSI_INFO("INIT-SEQ\n");

@@ -12,11 +12,12 @@
 # consent.
 #*****************************************************************************
 
-obj-y := irq.o kona_timer.o timer.o profile_timer.o pinmux.o sysfs.o scu.o kona_mic_bias.o ns_ioremap.o
+obj-y := irq.o kona_timer.o timer.o pinmux.o sysfs.o kona_mic_bias.o ns_ioremap.o
+obj-$(CONFIG_ARCH_HAWAII) += scu.o profile_timer.o
 obj-$(CONFIG_SMP) += headsmp.o platsmp.o
 obj-$(CONFIG_HOTPLUG_CPU)  += hotplug.o
 obj-$(CONFIG_ARCH_REQUIRE_GPIOLIB)  += gpio.o
-obj-$(CONFIG_HAVE_CLK) += clock.o
+obj-$(CONFIG_HAVE_CLK) += clock.o clock_debug.o
 obj-$(CONFIG_MACH_RHEA_RAY) += chal/
 obj-$(CONFIG_MACH_RHEA_FARADAY_EB10) += chal/
 obj-$(CONFIG_MACH_RHEA_RAY_EDN1X) += chal/
@@ -35,6 +36,8 @@ obj-$(CONFIG_MACH_RHEA_BERRI_EDN40) += chal/
 obj-$(CONFIG_MACH_RHEALC_BERRI) += chal/
 obj-$(CONFIG_ARCH_HAWAII) += chal/
 obj-$(CONFIG_ARCH_HAWAII) += csl/
+obj-$(CONFIG_ARCH_JAVA) += chal/
+obj-$(CONFIG_ARCH_JAVA) += csl/
 obj-$(CONFIG_MACH_RHEA_RAY) += csl/
 obj-$(CONFIG_MACH_RHEA_FARADAY_EB10) += csl/
 obj-$(CONFIG_MACH_RHEA_RAY_EDN1X) += csl/
@@ -70,11 +73,22 @@ obj-$(CONFIG_KONA_ATAG_DT) += atag_dt.o
 obj-$(CONFIG_KONA_USB_CONTROL) += bcm_hsotgctrl.o bcm_hsotgctrl_phy_mdio.o
 obj-$(CONFIG_PROC_PINMUX_DUMP)	+= pindump.o
 obj-$(CONFIG_KONA_DT_BCMPMU)	+= bcmpmu-dt.o
+
+ifeq ($(CONFIG_1MHZ_SLV_SYSTEM_TIMER),y)
+KBUILD_CFLAGS += -DTIMER_NAME="\"slave\""
+else
+ifeq ($(CONFIG_ARCH_HAWAII), y)
+KBUILD_CFLAGS += -DTIMER_NAME="\"aon\""
+else
+KBUILD_CFLAGS += -DTIMER_NAME="\"core\""
+endif
+endif
+
 obj-$(CONFIG_LOCAL_TIMERS)	+= localtimer.o
 
-# wfi_count.o is required for SW-7022.
-obj-$(CONFIG_KONA_WFI_WORKAROUND) += wfi_count.o
 #kona profiler
 obj-$(CONFIG_KONA_PROFILER) += profiler.o ccu_profiler.o pi_profiler.o
 obj-$(CONFIG_KONA_MEMC) += kona_memc.o
+obj-$(CONFIG_KONA_SECURE_MEMC) += kona_secure_memc.o
 obj-$(CONFIG_KONA_AXITRACE)	+= axitrace.o
+obj-$(CONFIG_BRCM_CDC)	+= cdc.o

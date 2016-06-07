@@ -45,7 +45,10 @@ struct kona_headset_pd {
 	 */
 	int gpio_mic_gnd;
 	char *ldo_id;
+#if defined(CONFIG_MACH_HAWAII_SS_LOGAN)  || defined(CONFIG_MACH_HAWAII_SS_LOGANDS) || defined(CONFIG_MACH_HAWAII_SS_HEAT)\
+	|| defined(CONFIG_MACH_JAVA_SS_EVAL) || defined(CONFIG_MACH_JAVA_SS_BAFFINLITE)
 	int gpio_external_micbias;
+#endif
 };
 /* This API is used by Audio code to switch
  * the mic bias when required.

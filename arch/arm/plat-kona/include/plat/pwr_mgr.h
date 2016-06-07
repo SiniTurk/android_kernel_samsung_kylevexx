@@ -323,8 +323,10 @@ int pwr_mgr_init(struct pwr_mgr_info *info);
 int pwr_mgr_mask_intr(u32 intr, bool mask);
 int pwr_mgr_clr_intr_status(u32 intr);
 int pwr_mgr_get_intr_status(u32 intr);
-int pwr_mgr_pmu_reg_read(u8 reg_addr, u8 slave_id, u8 * reg_val);
+int pwr_mgr_pmu_reg_read(u8 reg_addr, u8 slave_id, u8 *reg_val);
+int pwr_mgr_pmu_reg_read_direct(u8 reg_addr, u8 slave_id, u8 *reg_val);
 int pwr_mgr_pmu_reg_write(u8 reg_addr, u8 slave_id, u8 reg_val);
+int pwr_mgr_pmu_reg_write_direct(u8 reg_addr, u8 slave_id, u8 reg_val);
 int pwr_mgr_pmu_reg_read_mul(u8 reg_addr_start, u8 slave_id,
 			     u8 count, u8 * reg_val);
 int pwr_mgr_pmu_reg_write_mul(u8 reg_addr_start, u8 slave_id,
@@ -334,5 +336,7 @@ int pwr_mgr_set_i2c_mode(int poll);
 #ifdef CONFIG_DEBUG_FS
 int pwr_mgr_debug_init(u32 bmdm_pwr_base);
 #endif
+
+void pwr_mgr_log_active_events(void);
 
 #endif /*__KONA_POWER_MANAGER_H__*/

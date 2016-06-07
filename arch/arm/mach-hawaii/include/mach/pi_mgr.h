@@ -2,6 +2,8 @@
 #ifndef __HAWAII_PI_MNGR_H__
 #define __HAWAII_PI_MNGR_H__
 
+#define MM_CLK_SRC_312M 1
+
 enum {
 	PI_MGR_PI_ID_MM,
 	PI_MGR_PI_ID_HUB_SWITCHABLE,
@@ -33,6 +35,13 @@ enum {
 	PI_OPP_SUPER_TURBO,
 	PI_OPP_MAX
 };
+
+#define OPP_XTAL_STRING		"XTAL"
+#define OPP_ECONOMY_STRING	"ECONOMY"
+#define OPP_NORMAL_STRING	"NORMAL"
+#define OPP_TURBO_STRING	"TURBO"
+#define OPP_SUPER_TURBO_STRING	"SUPER_TURBO"
+
 
 void hawaii_pi_mgr_init(void);
 

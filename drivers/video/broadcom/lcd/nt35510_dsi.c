@@ -40,6 +40,7 @@
 #define dev_dbg dev_info
 
 #define ESD_OPERATION
+#define ILI_ESD_OPERATION
 #define DURATION_TIME 3000 /* 3000ms */
 #define BOOT_WAIT_TIME 1000*600 /* 600sec */
 
@@ -57,7 +58,7 @@ static u8 mauc1_cmd[] = {
 		
 extern char *get_seq(DISPCTRL_REC_T *rec);
 extern void panel_write(UInt8 *buff);
-extern void panel_read(UInt8 reg, UInt8 *rxBuff, UInt8 buffLen);
+extern int panel_read(UInt8 reg, UInt8 *rxBuff, UInt8 buffLen);
 extern void kona_fb_esd_hw_reset(void);
 extern int kona_fb_obtain_lock(void);
 extern int kona_fb_release_lock(void);
@@ -82,16 +83,72 @@ struct nt35510_dsi_lcd {
 
 struct nt35510_dsi_lcd *lcd = NULL;
 u8 gPanelID[3];
+int multi_lcd_num = 2;
+int panel1_id_checked;
+int panel2_id_checked;
+int id1, id2, id3=0;
+int backlight_check = 0;
+EXPORT_SYMBOL(backlight_check);
 
-void panel_read_id(void)
+int panel_read_id(void)
 {
-	int nMaxReadByte = 16;
-	u8 *pPanelID = gPanelID;
+	int ret=0;
+	multi_lcd_num = multi_lcd_num -1;
+	/* Read panel ID*/
+	kona_fb_obtain_lock();
 	
-	pr_info("%s\n", __func__);	
+	if(!panel1_id_checked){
+	ret=panel_read(0xDA, gPanelID, 1);	
+	if(ret<0)
+		goto read_error;	
+	id1= gPanelID[0];
+	
+	ret=panel_read(0xDB, gPanelID, 1);	
+	if(ret<0)
+		goto read_error;
+	id2= gPanelID[0];
+	
+	ret=panel_read(0xDC, gPanelID, 1);
+	if(ret<0)
+		goto read_error;
+	id3= gPanelID[0];	
+	}
 
-	/* To Do : Read Panel ID */
+	printk("[LCD] id1 = %x, id2 = %x, id3 = %x,\n", id1, id2, id3);	
+
+	if(!panel1_id_checked){
+		if((id1==0x55)&&(id2==0xBC)&&(id3==0xD1)){ // DTC
+			ret=LCD_PANEL_ID_ONE;
+			printk("[LCD] DTC panel, ret=%d\n", ret);
+		}
+		else{
+			ret= -1;
+		}
+		panel1_id_checked=1;
+		goto read_error;
+	}
+
+	if(!panel2_id_checked){
+		if((id1==0x55)&&(id2==0xBC)&&(id3==0xC0)){ // BOE
+			ret=LCD_PANEL_ID_TWO;
+			printk("[LCD] BOE panel, ret=%d\n", ret);			
+		}
+		else{
+			ret= -1;
+		}
+		panel2_id_checked=1;
+		goto read_error;
+	}
+
+	read_error:
+	kona_fb_release_lock();	
+	if((multi_lcd_num==0)&&(ret<0))
+		ret=LCD_PANEL_NOT_CONNECTION;
+	printk("[LCD] %s : ret=%d\n", __func__, ret);
+	backlight_check = ret;
+	return ret;	
 }
+EXPORT_SYMBOL(panel_read_id);
 
 void panel_initialize(char *init_seq)
 {
@@ -107,7 +164,11 @@ void panel_initialize(char *init_seq)
 
 static ssize_t show_lcd_info(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	char temp[20];
+	char temp[20] = { 0 };
+	
+	if(id3==0xD1)
+	sprintf(temp, "INH_55BCD1\n");
+	else if(id3==0xC0)	
 	sprintf(temp, "INH_55BCC0\n");
 	strcat(buf, temp);
 	return strlen(buf);
@@ -115,26 +176,41 @@ static ssize_t show_lcd_info(struct device *dev, struct device_attribute *attr, 
 
 static DEVICE_ATTR(lcd_type, 0444, show_lcd_info, NULL);
 
+#ifdef ILI_ESD_OPERATION
+static int first_esd_enter_09h=1;
+static u8 iliteck_ref_09h[5];
+static int first_esd_enter_BCh=1;
+static u8 iliteck_ref_BCh[21];
+static int ili9806_esd_reset = 0;
+
+int nt35510_esd_reset_get(void)
+{
+    pr_info("%s %d \n", __func__, ili9806_esd_reset);
+
+    return ili9806_esd_reset;
+}
+void nt35510_esd_reset_set(int val)
+{
+    ili9806_esd_reset = val;
+    pr_info("%s %d \n", __func__, ili9806_esd_reset);
+}
+#endif
+
 #ifdef ESD_OPERATION
 static int nt35510_panel_check(void)
 {
-	int ret = 0;
+	int ret, read_check = 0;
 	u8 rdnumed, wonder[3], rdidic[3];
 	u8 exp_rdidic[3] = {0x55, 0x10, 0x05};
+#ifdef ILI_ESD_OPERATION
+    u8 iliteck_09h[5], iliteck_BCh[21];
+	u8 bch_cmd[] = {21,0xBC,0x1,0x12,0x61,0xff,0x10,0x10,0xb,0x13,0x32,0x73,0xff,0xff,0xe,0xe,0x0,0x3,0x66,0x63,0x1,0x0,0x0};
+#endif
 	
 	//pr_info(" %s \n", __func__);	
 	
 	kona_fb_obtain_lock();
-	
-	/*Read Number of Errors on DSI*/
-	panel_read(0x05, &rdnumed, 1);
-	//pr_info("read_data(0x05) = 0x%02X \n", rdnumed);
-	if (rdnumed != 0x00)
-	{
-		pr_err("%s : error in read_data(0x05) = 0x%02X \n", __func__, rdnumed);
-		ret = -1;
-		goto esd_detection;
-	}
+	if(backlight_check==2){	
 		
 	/*Read ID for IC Vender Code*/
 	panel_write(mauc1_cmd);
@@ -157,7 +233,101 @@ static int nt35510_panel_check(void)
 		ret = -1;
 		goto esd_detection;
 	}
+}
+#ifdef ILI_ESD_OPERATION
+    else if(backlight_check==1){
+        pr_info(" %s read 09h and BCh \n", __func__);
 		
+        //09 Address
+        read_check=panel_read(0x09, iliteck_09h, 5);
+        if(first_esd_enter_09h){
+        iliteck_ref_09h[0]=iliteck_09h[1];
+        iliteck_ref_09h[1]=iliteck_09h[2];
+        iliteck_ref_09h[2]=iliteck_09h[3];
+        iliteck_ref_09h[3]=iliteck_09h[4];      
+        first_esd_enter_09h=0;
+		}
+		
+        if( (read_check<0)||
+            ((iliteck_ref_09h[0] != iliteck_09h[1])||
+             (iliteck_ref_09h[1] != iliteck_09h[2])||
+             (iliteck_ref_09h[2] != iliteck_09h[3])||
+             (iliteck_ref_09h[3] != iliteck_09h[4]))
+          ){
+            pr_info("%s read_data(0x09) fail = 0x%x,0x%x,0x%x,0x%x,0x%x, %d \n", __func__,
+                iliteck_09h[0], iliteck_09h[1], iliteck_09h[2], iliteck_09h[3], iliteck_09h[4], read_check);   
+		ret = -1;
+		goto esd_detection;
+     }
+		
+        //BC Address
+        read_check=panel_read(0xBC, iliteck_BCh, 21);
+        if(first_esd_enter_BCh){
+            iliteck_ref_BCh[0]=iliteck_BCh[1];
+            iliteck_ref_BCh[1]=iliteck_BCh[2];
+            iliteck_ref_BCh[2]=iliteck_BCh[3];
+            iliteck_ref_BCh[3]=iliteck_BCh[4];
+            iliteck_ref_BCh[4]=iliteck_BCh[5];
+            iliteck_ref_BCh[5]=iliteck_BCh[6];
+            iliteck_ref_BCh[6]=iliteck_BCh[7];
+            iliteck_ref_BCh[7]=iliteck_BCh[8];
+            iliteck_ref_BCh[8]=iliteck_BCh[9];
+            iliteck_ref_BCh[9]=iliteck_BCh[10];
+            iliteck_ref_BCh[10]=iliteck_BCh[11];
+            iliteck_ref_BCh[11]=iliteck_BCh[12];
+            iliteck_ref_BCh[12]=iliteck_BCh[13];
+            iliteck_ref_BCh[13]=iliteck_BCh[14];
+            iliteck_ref_BCh[14]=iliteck_BCh[15];
+            iliteck_ref_BCh[15]=iliteck_BCh[16];
+            iliteck_ref_BCh[16]=iliteck_BCh[17];
+            iliteck_ref_BCh[17]=iliteck_BCh[18];
+            iliteck_ref_BCh[18]=iliteck_BCh[19];
+            iliteck_ref_BCh[19]=iliteck_BCh[20];
+
+            first_esd_enter_BCh=0;
+		}
+		
+        if((read_check<0)||
+            (iliteck_ref_BCh[0] != iliteck_BCh[1])||
+            (iliteck_ref_BCh[1] != iliteck_BCh[2])||
+            (iliteck_ref_BCh[2] != iliteck_BCh[3])||
+            (iliteck_ref_BCh[3] != iliteck_BCh[4])||
+            (iliteck_ref_BCh[4] != iliteck_BCh[5])||
+            (iliteck_ref_BCh[5] != iliteck_BCh[6])||
+            (iliteck_ref_BCh[6] != iliteck_BCh[7])||
+            (iliteck_ref_BCh[7] != iliteck_BCh[8])||
+            (iliteck_ref_BCh[8] != iliteck_BCh[9])||
+            (iliteck_ref_BCh[9] != iliteck_BCh[10])||
+            (iliteck_ref_BCh[10] != iliteck_BCh[11])||
+            (iliteck_ref_BCh[11] != iliteck_BCh[12])||
+            (iliteck_ref_BCh[12] != iliteck_BCh[13])||
+            (iliteck_ref_BCh[13] != iliteck_BCh[14])||
+            (iliteck_ref_BCh[14] != iliteck_BCh[15])||
+            (iliteck_ref_BCh[15] != iliteck_BCh[16])||
+            (iliteck_ref_BCh[16] != iliteck_BCh[17])||
+            (iliteck_ref_BCh[17] != iliteck_BCh[18])||
+            (iliteck_ref_BCh[18] != iliteck_BCh[19])||
+            (iliteck_ref_BCh[19] != iliteck_BCh[20])
+            ){
+
+                pr_info("%s read_data(0xBC) fail = 0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x\n", __func__,
+                    iliteck_BCh[0], iliteck_BCh[1],iliteck_BCh[2], iliteck_BCh[3],iliteck_BCh[4], iliteck_BCh[5],iliteck_BCh[6], iliteck_BCh[7]);    
+                
+                pr_info("%s read_data(0xBC) fail = 0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x\n", __func__,
+                    iliteck_BCh[8],iliteck_BCh[9], iliteck_BCh[10],iliteck_BCh[11], iliteck_BCh[12],iliteck_BCh[13], iliteck_BCh[14]);    
+
+                pr_info("%s read_data(0xBC) fail = 0x%x,0x%x,0x%x,0x%x,0x%x,0x%x, %d\n", __func__,
+                    iliteck_BCh[15], iliteck_BCh[16],iliteck_BCh[17], iliteck_BCh[18],iliteck_BCh[19], iliteck_BCh[20], read_check);   
+
+                panel_write(bch_cmd);
+                msleep(10);
+
+			ret = -1;
+			goto esd_detection;
+		}		
+#endif
+	ret = 0;
+}		
 esd_detection:
 	kona_fb_release_lock();
 
@@ -167,9 +337,17 @@ esd_detection:
 
 static void nt35510_esd_recovery(void)
 {
+#ifdef ILI_ESD_OPERATION
+    nt35510_esd_reset_set(1);
+#endif
+
 	//pr_info("%s\n", __func__);	
 	
 	kona_fb_esd_hw_reset();
+
+#ifdef ILI_ESD_OPERATION
+    nt35510_esd_reset_set(0);
+#endif
 }
 
 static void esd_work_func(struct work_struct *work)

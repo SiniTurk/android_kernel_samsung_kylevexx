@@ -25,6 +25,7 @@
 #include <linux/io.h>
 #include <plat/kona_pm_dbg.h>
 #include <plat/kona_pm.h>
+#include <mach/rdb/brcm_rdb_scu.h>
 #include <plat/pwr_mgr.h>
 #include <plat/pi_mgr.h>
 #include <plat/scu.h>
@@ -34,6 +35,7 @@
 #include <mach/rdb/brcm_rdb_root_clk_mgr_reg.h>
 #include <mach/rdb/brcm_rdb_gicdist.h>
 #include <mach/rdb/brcm_rdb_pwrmgr.h>
+#include <mach/rdb/brcm_rdb_scu.h>
 #include <mach/pwr_mgr.h>
 #include <mach/rdb/brcm_rdb_kona_gptimer.h>
 #include <mach/pm.h>
@@ -45,7 +47,7 @@
 struct pm_info {
 	int keep_xtl_on;
 	int clk_dbg_dsm;
-	int wfi_26mhz_cnt;
+	int wfi_syspll_cnt;
 	int force_sleep;
 	u32 dormant_enable;
 	u32 log_mask;
@@ -59,7 +61,7 @@ struct pm_info {
 static struct pm_info pm_info = {
 	.keep_xtl_on = 0,
 	.clk_dbg_dsm = 0,
-	.wfi_26mhz_cnt = 0,
+	.wfi_syspll_cnt = 0,
 	.force_sleep = 0,
 	.dormant_enable = 1,
 	.log_mask = 0,
@@ -67,7 +69,7 @@ static struct pm_info pm_info = {
 
 module_param_named(keep_xtl_on, pm_info.keep_xtl_on, int,
 	S_IRUGO|S_IWUSR|S_IWGRP);
-module_param_named(wfi_26mhz_cnt, pm_info.wfi_26mhz_cnt, int,
+module_param_named(wfi_syspll_cnt, pm_info.wfi_syspll_cnt, int,
 	S_IRUGO | S_IWGRP);
 /**
  * Run time flag to debug the Rhea clocks preventing deepsleep
@@ -108,15 +110,14 @@ static struct kona_idle_state idle_states[] = {
 		.state = CSTATE_SIMPLE_WFI,
 		.enter = enter_suspend_state,
 	},
-#ifdef CONFIG_26MHZ_WFI
+#ifdef CONFIG_CPU_SYSPLL_WFI_CSTATE
 	{
 		.name = "C2",
-		.desc = "26Mhz-WFI", /*26MHz WFI*/
+		.desc = "wfi_syspll", /*syspll WFI*/
 		.flags = CPUIDLE_FLAG_TIME_VALID,
-		.params = CTRL_PARAMS_CSTATE_DISABLED,
-		.latency = EXIT_LAT_26MHZ_WFI,
-		.target_residency = TRGT_RESI_26MHZ_WFI,
-		.state = CSTATE_26MHZ_WFI,
+		.latency = EXIT_LAT_SYSPLL_WFI,
+		.target_residency = TRGT_RESI_SYSPLL_WFI,
+		.state = CSTATE_SYSPLL_WFI,
 		.enter = enter_suspend_state,
 	},
 #endif
@@ -280,28 +281,28 @@ static void config_wakeup_interrupts(void)
 
 int enter_suspend_state(struct kona_idle_state *state, u32 ctrl_params)
 {
-#ifdef CONFIG_26MHZ_WFI
+#ifdef CONFIG_CPU_SYSPLL_WFI_CSTATE
 	static u32 freq_id = 0xFFFF;
 #endif
 
-#ifdef CONFIG_26MHZ_WFI
-	if (state->state == CSTATE_26MHZ_WFI) {
+#ifdef CONFIG_CPU_SYSPLL_WFI_CSTATE
+	if (state->state == CSTATE_SYSPLL_WFI) {
 		struct opp_info opp_info;
 		spin_lock(&pm_info.lock);
 		opp_info.ctrl_prms = CCU_POLICY_FREQ_REG_INIT;
-		opp_info.freq_id = PROC_CCU_FREQ_ID_XTAL;
+		opp_info.freq_id = CPU_FREQ_ID_SYSPLL_WFI;
 		state->num_cpu_in_state++;
 		BUG_ON(state->num_cpu_in_state > CONFIG_NR_CPUS);
-		instrument_lpm(LPM_TRACE_ENTER_26MWFI,
+		instrument_lpm(LPM_TRACE_ENTER_SYSPLL_WFI,
 				(u16)state->num_cpu_in_state);
 
 		if (state->num_cpu_in_state == CONFIG_NR_CPUS) {
-			pm_info.wfi_26mhz_cnt++;
+			pm_info.wfi_syspll_cnt++;
 			freq_id = ccu_get_freq_policy(pm_info.proc_ccu,
 				CCU_POLICY(PM_DFS));
 			ccu_set_freq_policy(pm_info.proc_ccu,
 				CCU_POLICY(PM_DFS), &opp_info);
-			instrument_lpm(LPM_TRACE_26MWFI_SET_FREQ,
+			instrument_lpm(LPM_TRACE_SYSPLL_WFI_SET_FREQ,
 				(u16)freq_id);
 
 
@@ -310,17 +311,17 @@ int enter_suspend_state(struct kona_idle_state *state, u32 ctrl_params)
 	} else {
 		instrument_lpm(LPM_TRACE_ENTER_WFI, 0);
 	}
-#endif /*CONFIG_26MHZ_WFI*/
+#endif /*CONFIG_CPU_SYSPLL_WFI_CSTATE*/
 
 	enter_wfi();
 
-#ifdef CONFIG_26MHZ_WFI
-	if (state->state == CSTATE_26MHZ_WFI) {
+#ifdef CONFIG_CPU_SYSPLL_WFI_CSTATE
+	if (state->state == CSTATE_SYSPLL_WFI) {
 		struct opp_info opp_info;
 		spin_lock(&pm_info.lock);
 		opp_info.ctrl_prms = CCU_POLICY_FREQ_REG_INIT;
 		BUG_ON(state->num_cpu_in_state == 0);
-		instrument_lpm(LPM_TRACE_EXIT_26MWFI,
+		instrument_lpm(LPM_TRACE_EXIT_SYSPLL_WFI,
 				(u16)state->num_cpu_in_state);
 
 		if (state->num_cpu_in_state == CONFIG_NR_CPUS) {
@@ -328,7 +329,7 @@ int enter_suspend_state(struct kona_idle_state *state, u32 ctrl_params)
 			opp_info.freq_id = freq_id;
 			ccu_set_freq_policy(pm_info.proc_ccu,
 				CCU_POLICY(PM_DFS), &opp_info);
-			instrument_lpm(LPM_TRACE_26MWFI_RES_FREQ,
+			instrument_lpm(LPM_TRACE_SYSPLL_WFI_RES_FREQ,
 				(u16)freq_id);
 
 			freq_id = 0xFFFF;
@@ -339,7 +340,7 @@ int enter_suspend_state(struct kona_idle_state *state, u32 ctrl_params)
 		instrument_lpm(LPM_TRACE_EXIT_WFI, 0);
 	}
 
-#endif /*CONFIG_26MHZ_WFI*/
+#endif /*CONFIG_CPU_SYSPLL_WFI_CSTATE*/
 
 	return -1;
 }
@@ -407,11 +408,8 @@ int disable_all_interrupts(void)
 
 u32 num_cpus(void)
 {
-#if 0
-	return (readl(KONA_SCU_VA + SCU_CONFIG_OFFSET) &
-		SCU_CONFIG_NUM_CPUS_MASK) + 1;
-#endif
-	return CONFIG_NR_CPUS;
+	return CONFIG_NR_CPUS; /*(readl(KONA_SCU_VA + SCU_CONFIG_OFFSET) &
+		SCU_CONFIG_NUM_CPUS_MASK) + 1;*/
 }
 
 static int enter_retention_state(struct kona_idle_state *state)
@@ -525,7 +523,9 @@ int enter_idle_state(struct kona_idle_state *state, u32 ctrl_params)
 		if (ctrl_params & CTRL_PARAMS_ENTER_SUSPEND) {
 			__clock_print_act_clks();
 			pi_mgr_print_active_pis();
-		}
+			pr_info("Active events before suspend\n");
+			pwr_mgr_log_active_events();
+	}
 	if (smp_processor_id() == 0)
 		log_pm(num_dbg_args[DBG_MSG_PM_LPM_ENTER],
 			DBG_MSG_PM_LPM_ENTER, pi->id, state->state);
@@ -614,8 +614,13 @@ int enter_idle_state(struct kona_idle_state *state, u32 ctrl_params)
 	pwr_mgr_process_events(MISC_WKP_EVENT, BRIDGE_TO_MODEM_EVENT, false);
 	pwr_mgr_process_events(USBOTG_EVENT, PHY_RESUME_EVENT, false);
 
-	if (ctrl_params & CTRL_PARAMS_ENTER_SUSPEND)
-		log_wakeup_interrupts();
+	if (pm_info.clk_dbg_dsm) {
+		if (ctrl_params & CTRL_PARAMS_ENTER_SUSPEND) {
+			pr_info("Active Events at wakeup\n");
+			log_wakeup_interrupts();
+			pwr_mgr_log_active_events();
+		}
+	}
 
 	if (ctrl_params & CTRL_PARAMS_FLAG_XTAL_ON || pm_info.keep_xtl_on)
 		clk_set_crystal_pwr_on_idle(true);
