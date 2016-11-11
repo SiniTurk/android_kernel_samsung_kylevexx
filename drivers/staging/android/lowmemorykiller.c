@@ -270,12 +270,16 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 	 * allocated for files.
 	 */
 #ifdef CONFIG_CMA
-	cma_free = global_page_state(NR_FREE_CMA_PAGES);
-	cma_file = global_page_state(NR_CMA_INACTIVE_FILE)
-			+ global_page_state(NR_CMA_ACTIVE_FILE);
+#define CMA_LMK_RAM_LIMIT	131072 /* 512 MB */
+	if ((migrate_type != MIGRATE_MOVABLE) ||
+			(totalram_pages < CMA_LMK_RAM_LIMIT)) {
+		cma_free = global_page_state(NR_FREE_CMA_PAGES);
+		cma_file = global_page_state(NR_CMA_INACTIVE_FILE)
+				+ global_page_state(NR_CMA_ACTIVE_FILE);
 
-	other_free -= cma_free;
-	other_file -= cma_file;
+		other_free -= cma_free;
+		other_file -= cma_file;
+	}
 #endif
 	if (lowmem_adj_size < array_size)
 		array_size = lowmem_adj_size;
