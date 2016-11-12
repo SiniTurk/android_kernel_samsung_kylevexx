@@ -6,3 +6,6 @@ script:
 - export CROSS_COMPILE="$HOME/android_prebuilts_gcc/arm-eabi-4.6/bin/arm-eabi-"
 - make -j4 bcm21664_hawaii_ss_kyleve_rev00_defconfig	
 - make -j4
+- export kernel_md5=`md5sum arch/arm/boot/zImage`
+- mkdir -p $HOME/kernel/
+- mv arch/arm/boot/zImage $HOME/kernel/kernel-$(date +%Y%m%d)-3.4.5-UNOFFICIAL-kyleve-$(md5sum arch/arm/zImage)
