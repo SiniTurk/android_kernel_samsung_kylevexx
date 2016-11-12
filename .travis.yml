@@ -8,4 +8,5 @@ script:
 - make -j4
 - export kernel_md5=`md5sum arch/arm/boot/zImage`
 - mkdir -p $HOME/kernel/
-- mv arch/arm/boot/zImage $HOME/kernel/kernel-$(date +%Y%m%d)-3.4.5-UNOFFICIAL-kyleve-$(md5sum arch/arm/zImage)
+- mv arch/arm/boot/zImage $HOME/kernel/zImage
+- mv $HOME/kernel/zImage $HOME/kernel/kernel-$(date +%Y%m%d)-3.4.5-UNOFFICIAL-kyleve-$(md5sum arch/arm/zImage)
