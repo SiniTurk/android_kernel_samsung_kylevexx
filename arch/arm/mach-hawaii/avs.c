@@ -89,11 +89,6 @@ static char *silicon_type_names[] = {
 	"SLOW", "TYP SLOW", "TYPICAL", "TYP FAST", "FAST"
 };
 
-
-static char *silicon_type_names[] = {
-	"SLOW", "TYP SLOW", "TYPICAL", "TYP FAST", "FAST"
-};		
-
 enum {
 	AVS_LOG_ERR  = 1 << 0,
 	AVS_LOG_WARN = 1 << 1,
