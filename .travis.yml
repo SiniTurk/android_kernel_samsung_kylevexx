@@ -1,6 +1,6 @@
 language: c
 before_script:
-- git clone https://github.com/garbage-bin/android_kernel_samsung_kylevexx.git $HOME/android_prebuilts_gcc
+- git clone https://github.com/ZIM555/android_prebuilts_gcc.git $HOME/android_prebuilts_gcc
 script:
 - export ARCH=arm
 - export CROSS_COMPILE="$HOME/android_prebuilts_gcc/arm-eabi-4.6/bin/arm-eabi-"
